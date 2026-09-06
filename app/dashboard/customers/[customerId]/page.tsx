@@ -3,6 +3,8 @@ import { requireBusinessContext } from "@/lib/dal";
 import { createClient } from "@/lib/supabase/server";
 import { RecordTransactionForm } from "./record-transaction-form";
 import { RedeemRewardButton } from "./redeem-reward-button";
+import { ReverseTransactionButton } from "./reverse-transaction-button";
+import { RotateTokenButton } from "./rotate-token-button";
 
 function formatDateTime(value: string | null) {
   if (!value) return "–";
@@ -62,6 +64,7 @@ export default async function CustomerProfilePage({
     ]);
 
   const availableRewards = (rewards ?? []).filter((r) => r.status === "AVAILABLE");
+  const canManage = membership.role === "OWNER" || membership.role === "MANAGER";
 
   return (
     <div className="flex flex-col gap-8">
@@ -77,6 +80,7 @@ export default async function CustomerProfilePage({
             Joined {customer.created_at ? new Date(customer.created_at).toLocaleDateString() : "–"}
             {customer.birthday ? ` · Birthday ${new Date(customer.birthday).toLocaleDateString()}` : ""}
           </p>
+          {canManage && <RotateTokenButton customerId={customerId} />}
         </div>
 
         <div className="grid grid-cols-2 gap-4 text-right sm:grid-cols-4">
@@ -122,7 +126,9 @@ export default async function CustomerProfilePage({
                     <span>{r.name}</span>
                     <RedeemRewardButton
                       customerId={customerId}
+                      customerName={customer.first_name ?? undefined}
                       rewardId={r.id}
+                      rewardName={r.name}
                       locationId={primaryLocation?.id ?? null}
                     />
                   </div>
@@ -155,17 +161,25 @@ export default async function CustomerProfilePage({
                   <th className="px-4 py-2 font-medium">Amount</th>
                   <th className="px-4 py-2 font-medium">Location</th>
                   <th className="px-4 py-2 font-medium">Status</th>
+                  {canManage && <th className="px-4 py-2 font-medium" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-foreground/10">
                 {transactions.map((t) => (
-                  <tr key={t.id}>
+                  <tr key={t.id} className={t.status === "VOID" ? "opacity-50" : undefined}>
                     <td className="px-4 py-2 text-foreground/70">{formatDateTime(t.created_at)}</td>
                     <td className="px-4 py-2">
                       {t.currency} {t.total}
                     </td>
                     <td className="px-4 py-2 text-foreground/70">{t.location?.name ?? "–"}</td>
                     <td className="px-4 py-2 text-foreground/70">{t.status}</td>
+                    {canManage && (
+                      <td className="px-4 py-2 text-right">
+                        {t.status === "COMPLETED" && (
+                          <ReverseTransactionButton customerId={customerId} transactionId={t.id} />
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

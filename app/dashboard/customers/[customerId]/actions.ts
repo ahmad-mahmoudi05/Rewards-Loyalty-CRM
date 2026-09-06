@@ -75,3 +75,58 @@ export async function redeemReward(
   revalidatePath("/dashboard/customers");
   return { success: true };
 }
+
+export type ReverseTransactionState = { error?: string; success?: boolean } | undefined;
+
+export async function reverseTransactionAction(
+  customerId: string,
+  _state: ReverseTransactionState,
+  formData: FormData
+): Promise<ReverseTransactionState> {
+  const membership = await requireBusinessContext();
+
+  const transactionId = formData.get("transactionId");
+  const reason = formData.get("reason");
+  if (typeof transactionId !== "string" || typeof reason !== "string" || reason.trim().length < 3) {
+    return { error: "Enter a reason for the reversal (at least 3 characters)." };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("reverse_transaction", {
+    p_business_id: membership.business_id,
+    p_transaction_id: transactionId,
+    p_reason: reason.trim(),
+  });
+
+  if (error) {
+    return { error: error.message || "This transaction could not be reversed." };
+  }
+
+  revalidatePath(`/dashboard/customers/${customerId}`);
+  return { success: true };
+}
+
+export type RotateTokenState = { error?: string; success?: boolean } | undefined;
+
+export async function rotateWalletTokenAction(
+  customerId: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- required by useActionState's (state, formData) call signature after .bind(null, customerId)
+  _state: RotateTokenState,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _formData: FormData
+): Promise<RotateTokenState> {
+  const membership = await requireBusinessContext();
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("rotate_customer_wallet_token", {
+    p_business_id: membership.business_id,
+    p_customer_id: customerId,
+  });
+
+  if (error) {
+    return { error: "Could not reset this customer's loyalty card." };
+  }
+
+  revalidatePath(`/dashboard/customers/${customerId}`);
+  return { success: true };
+}

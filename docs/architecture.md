@@ -121,6 +121,41 @@ for `customers` or `customer_consents`, and there doesn't need to be. Phone iden
 normalized via `libphonenumber-js` (`lib/phone.ts`) before the `(business_id,
 phone_normalized)` uniqueness check, defaulting to `+971` for the UAE launch market.
 
+## QR/token security model (added Day 3)
+
+The Staff Mode scanner's only trusted input is `customers.wallet_token` — an opaque
+`gen_random_uuid()`, never derived from phone/email/id, unrelated to `customers.id` (Day 1
+already established this; Day 3 is the first thing that actually *scans* it). The customer
+card's QR encodes `${siteUrl}/q/<wallet_token>` — a URL, not a bare token, for interoperability
+with phones' native camera apps (see `app/q/[token]/page.tsx`, a convenience redirect to the
+card for anyone who scans it outside our own Staff Mode).
+
+Resolution (`app/dashboard/scanner/actions.ts` → `resolveCustomerByToken`) runs as the
+**authenticated staff member**, not a privileged bypass:
+
+1. `lib/validation/scanner.ts`'s `parseScannedToken` strips a URL down to its last path
+   segment and validates it as a UUID — anything else (garbage, an arbitrary URL, oversized
+   input) is rejected before it ever reaches a query. The scanner never navigates to scanned
+   text; it only ever extracts a token.
+2. The lookup is `customers` filtered by **both** `wallet_token` and the staff's own
+   `business_id` (from their session, never from client input) — belt-and-suspenders with
+   the `customers` RLS policy, which independently would hide a cross-tenant row anyway.
+3. Every failure mode — malformed input, a token that doesn't exist, a token that belongs to
+   a different business — returns the exact same generic message ("This loyalty card
+   couldn't be recognized."). Never confirm that a token belongs to *some other* tenant.
+
+The identical function backs a manual "paste/scan a code" input (`HardwareScannerInput` in
+`staff-mode-client.tsx`) as the camera path — this is not a test shortcut, it's the real
+mechanism a USB/Bluetooth barcode scanner needs, since those devices just type their payload
+into whatever's focused and send Enter (Day 1 already documented this compatibility
+requirement; Day 3 is what actually delivers it).
+
+**Non-negotiable, enforced structurally, not just by convention**: scanning only ever
+resolves identity. The only functions that touch `loyalty_accounts`/`rewards`/
+`transactions` are the Day 2 RPCs (`record_transaction`, `redeem_reward`), called from a
+*separate* explicit staff action after the scan — there is no code path from "token
+resolved" to "loyalty awarded" without that.
+
 ## Repository layout
 
 ```

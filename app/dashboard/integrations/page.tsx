@@ -1,6 +1,9 @@
+import { requireRole } from "@/lib/dal";
 import { PlaceholderPage } from "@/components/dashboard/placeholder-page";
 
-export default function IntegrationsPage() {
+export default async function IntegrationsPage() {
+  await requireRole(["OWNER", "MANAGER"]);
+
   return (
     <PlaceholderPage
       title="Integrations"

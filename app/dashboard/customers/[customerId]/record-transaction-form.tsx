@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useRef } from "react";
 import { recordTransaction } from "./actions";
 
 export function RecordTransactionForm({
@@ -8,16 +8,30 @@ export function RecordTransactionForm({
   loyaltyProgramId,
   locationId,
   currency,
+  onRecorded,
 }: {
   customerId: string;
   loyaltyProgramId: string;
   locationId: string | null;
   currency: string;
+  /** Called after a successful record — lets a client-side host (the
+   * scanner) refresh its own view without relying on Server Component
+   * route revalidation, which doesn't apply outside a fixed route. */
+  onRecorded?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(recordTransaction, undefined);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (state?.success) {
+      onRecorded?.();
+      formRef.current?.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per success, not on every onRecorded identity change
+  }, [state?.success]);
 
   return (
-    <form action={formAction} className="flex flex-wrap items-end gap-3">
+    <form ref={formRef} action={formAction} className="flex flex-wrap items-end gap-3">
       <input type="hidden" name="customerId" value={customerId} />
       <input type="hidden" name="loyaltyProgramId" value={loyaltyProgramId} />
       {locationId && <input type="hidden" name="locationId" value={locationId} />}

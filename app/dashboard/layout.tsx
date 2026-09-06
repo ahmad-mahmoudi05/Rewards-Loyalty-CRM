@@ -6,9 +6,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const membership = await requireBusinessContext();
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="flex w-60 shrink-0 flex-col justify-between border-r border-foreground/10 px-4 py-6">
-        <div className="flex flex-col gap-6">
+    <div className="flex min-h-screen flex-col md:flex-row">
+      <aside className="flex shrink-0 flex-col justify-between border-b border-foreground/10 px-4 py-4 md:w-60 md:border-b-0 md:border-r md:py-6">
+        <div className="flex flex-col gap-3 md:gap-6">
           <div className="flex flex-col gap-0.5 px-3">
             <span className="text-sm font-semibold tracking-tight">LoyalNest</span>
             <span className="truncate text-xs text-foreground/60">{membership.business.name}</span>
@@ -16,7 +16,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <SidebarNav />
         </div>
 
-        <form action={logout} className="px-3">
+        <form action={logout} className="px-3 pt-3 md:pt-0">
           <button
             type="submit"
             className="w-full rounded-md px-3 py-2 text-left text-sm text-foreground/70 transition-colors hover:bg-foreground/5 hover:text-foreground"
@@ -26,7 +26,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         </form>
       </aside>
 
-      <main className="flex-1 px-8 py-8">{children}</main>
+      <main className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">{children}</main>
     </div>
   );
 }

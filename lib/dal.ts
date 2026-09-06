@@ -49,3 +49,18 @@ export async function requireBusinessContext() {
   if (!membership) redirect("/onboarding");
   return membership;
 }
+
+/**
+ * Page-level role gate for staff-restricted sections (billing, integrations,
+ * analytics, ...). RLS already keeps the underlying data safe even if this
+ * is skipped, but the spec calls for direct-URL access itself to be
+ * rejected, not just left showing empty data. Redirects rather than
+ * rendering a 403 — deliberately simple for Day 3 scope.
+ */
+export async function requireRole(allowedRoles: Array<"OWNER" | "MANAGER" | "STAFF">) {
+  const membership = await requireBusinessContext();
+  if (!allowedRoles.includes(membership.role as "OWNER" | "MANAGER" | "STAFF")) {
+    redirect("/dashboard");
+  }
+  return membership;
+}

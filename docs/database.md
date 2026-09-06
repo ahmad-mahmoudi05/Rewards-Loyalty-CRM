@@ -114,6 +114,37 @@ going negative). **Known limitation, intentionally out of Day 2 scope**: does no
 retroactively cancel a reward that was already generated off the reversed transaction —
 unwinding a reward that might already be redeemed is a materially bigger problem, deferred.
 
+## Day 3 additions
+
+- `0012_reversal_reward_cancellation.sql` — replaces `reverse_transaction`'s body (same
+  signature) to also cancel a reward if it was generated solely off the transaction being
+  reversed and is still `AVAILABLE` (`rewards.status -> 'CANCELLED'`). If that reward was
+  already `REDEEMED`, it is left untouched and the function's JSON result carries
+  `reward_conflict: true` plus `conflicted_reward_ids` — verified live: reversing a
+  transaction before its reward is redeemed correctly cancels it; reversing after redemption
+  leaves the `REDEEMED` reward exactly as-is and reports the conflict instead of silently
+  undoing history.
+- `0013_wallet_token_rotation.sql` — `rotate_customer_wallet_token(business_id, customer_id)`,
+  OWNER/MANAGER only. Replaces `customers.wallet_token` with a fresh `gen_random_uuid()`;
+  any previously issued QR/Wallet pass encoding the old value simply stops matching any row.
+- `0014_owner_role_guard.sql` — a `BEFORE INSERT OR UPDATE` trigger on `business_members`
+  rejecting any write that would set `role = 'OWNER'` while a different OWNER row already
+  exists for that business. Closes the escalation gap flagged (and deliberately deferred) in
+  Day 1: a MANAGER could otherwise promote themselves to OWNER via the same RLS write policy
+  that legitimately lets them manage staff. The bootstrap OWNER insert (from
+  `on_business_created`, migration 0002) is unaffected since it's always the first membership
+  for a new business. The Day 3 staff-invite feature also independently restricts its own
+  role parameter to `STAFF`/`MANAGER` at the application layer — this trigger is the
+  database-level backstop for any other write path.
+- `customers.wallet_token` (already existed, Day 1) is now load-bearing for the QR/Wallet
+  identity system: the customer-facing card's QR encodes `/q/<wallet_token>`, and the Staff
+  Mode scanner's only trusted input is that same token. See `docs/architecture.md` for the
+  full token-resolution security model.
+- No new tables were needed for the wallet architecture — `wallet_passes` (Day 1) already has
+  the columns a real integration would populate (`serial_number`, `auth_token`,
+  `last_pushed_at`); nothing writes to it yet since signing isn't implemented (see
+  `docs/integrations.md`).
+
 ## Gotcha found during testing: INSERT ... RETURNING re-checks the SELECT policy
 
 Postgres applies a table's SELECT-policy `USING` clause to the row returned by

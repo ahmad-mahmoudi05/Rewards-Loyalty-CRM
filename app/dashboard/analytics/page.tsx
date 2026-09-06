@@ -1,6 +1,9 @@
+import { requireRole } from "@/lib/dal";
 import { PlaceholderPage } from "@/components/dashboard/placeholder-page";
 
-export default function AnalyticsPage() {
+export default async function AnalyticsPage() {
+  await requireRole(["OWNER", "MANAGER"]);
+
   return (
     <PlaceholderPage
       title="Analytics"

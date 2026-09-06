@@ -1,9 +1,9 @@
-import { requireBusinessContext } from "@/lib/dal";
+import { requireRole } from "@/lib/dal";
 import { createClient } from "@/lib/supabase/server";
 import { LoyaltyForm } from "./loyalty-form";
 
 export default async function LoyaltyPage() {
-  const membership = await requireBusinessContext();
+  const membership = await requireRole(["OWNER", "MANAGER"]);
   const supabase = await createClient();
 
   const { data: program } = await supabase

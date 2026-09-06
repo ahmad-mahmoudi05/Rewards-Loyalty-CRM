@@ -1,6 +1,9 @@
+import { requireRole } from "@/lib/dal";
 import { PlaceholderPage } from "@/components/dashboard/placeholder-page";
 
-export default function BillingPage() {
+export default async function BillingPage() {
+  await requireRole(["OWNER"]);
+
   return (
     <PlaceholderPage
       title="Billing"

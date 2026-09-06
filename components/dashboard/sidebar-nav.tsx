@@ -9,7 +9,7 @@ export function SidebarNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex flex-col gap-0.5">
+    <nav className="flex gap-0.5 overflow-x-auto md:flex-col md:overflow-visible">
       {DASHBOARD_NAV.map((item) => {
         const isActive = item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href);
         return (
@@ -17,7 +17,7 @@ export function SidebarNav() {
             key={item.href}
             href={item.href}
             className={cn(
-              "rounded-md px-3 py-2 text-sm transition-colors",
+              "shrink-0 rounded-md px-3 py-2 text-sm transition-colors",
               isActive
                 ? "bg-foreground/10 font-medium text-foreground"
                 : "text-foreground/70 hover:bg-foreground/5 hover:text-foreground"

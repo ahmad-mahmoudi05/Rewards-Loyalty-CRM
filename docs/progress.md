@@ -264,3 +264,170 @@ linked project, types regenerated (`lib/supabase/database.types.ts`).
 - The `location_id` plumbing is already present end-to-end (transactions, redemptions,
   reversals) even though Day 2's UI only ever passes the business's primary location — Day 3's
   Staff Mode can pass the actual counter location once multi-location staff assignment exists.
+
+## 2026-09-07 — Session 3 (Day 3 — QR scanner, staff mode, wallet architecture)
+
+### Completed
+
+- Re-read every doc, every migration, and the exact current Day 2 code (`dal.ts`,
+  the customer-profile actions/components, the card page) before writing anything, per this
+  session's instructions. Reused the Day 2 `RecordTransactionForm`/`RedeemRewardButton`
+  components unmodified in substance for the scanner (only added an optional
+  `onSuccess`/`onRedeemed` callback prop so a non-route-bound client component can refresh
+  itself) — no loyalty logic was reimplemented anywhere.
+- **Migrations 0012–0014** (pushed, types regenerated):
+  - `0012_reversal_reward_cancellation.sql` — revisited Day 2's documented reversal
+    limitation as instructed. `reverse_transaction` now cancels a reward if it was generated
+    solely from the reversed transaction and is still `AVAILABLE`; if already `REDEEMED`, it
+    reports `reward_conflict: true` instead of touching it. **Verified live, both branches**
+    (see Security/correctness tests below).
+  - `0013_wallet_token_rotation.sql` — `rotate_customer_wallet_token`, OWNER/MANAGER only.
+  - `0014_owner_role_guard.sql` — closes the Day 1-documented OWNER-escalation gap with a
+    DB trigger, justified now because Day 3's staff-invite feature is the first real write
+    path to `business_members` since onboarding.
+- **QR/token security**: `lib/validation/scanner.ts` (`parseScannedToken`) + a token
+  resolution path (`app/dashboard/scanner/actions.ts`) that scopes to the staff member's own
+  business twice over (explicit filter + RLS) and returns one generic error for every
+  failure mode. Full design in `docs/architecture.md` ("QR/token security model").
+- **Staff Mode** (`/dashboard/scanner`, replacing the Day 1 placeholder): camera scanner
+  (`@zxing/browser`, chosen over the native `BarcodeDetector` for consistent cross-browser
+  support — see the component for the exact permission/denied/no-camera/error states), a
+  hardware-scanner-compatible manual input (also the real answer to Day 1's "USB barcode
+  scanners must work" promise, not a test shortcut), search fallback, and a shared
+  `CustomerOperationalPanel` — scan and search converge on one identical operational UI, per
+  spec.
+- **Customer card** (`/join/[slug]/card`): now shows a real QR (`/q/<wallet_token>`), a
+  "remaining until reward" line, last-updated timestamp, and Apple/Google Wallet buttons.
+  Added `/q/[token]` as a plain public redirect (for phones' native camera apps that offer
+  to open a scanned URL directly, which our own Staff Mode never does).
+- **Wallet architecture** (`services/wallet/`): real, spec-correct payload mappers for both
+  Apple (`pass.json`) and Google (Loyalty Object) from our own data, gated by a
+  configuration check, wired to `/api/wallet/{apple,google}/[token]` routes and graceful
+  "not set up yet" UI buttons. Signing (the part that needs real certificates/a Google
+  service account) is explicitly not implemented — see "External blockers" and
+  `docs/integrations.md` for the precise honest breakdown Part 47 asked for.
+- **Staff invitation** (`/dashboard/team`): owner/manager can add a new-or-existing user as
+  STAFF/MANAGER (never OWNER); a brand-new account's temporary password is shown once
+  (no email-sending infra exists yet — that's Day 4).
+- **Role enforcement**: `lib/dal.ts` gained `requireRole()`, applied to
+  billing/integrations/analytics/loyalty — direct URL access by a STAFF session now redirects
+  server-side, not just a hidden nav link.
+- `npx tsc --noEmit`, `npm run lint`, `npm run build` all pass clean.
+
+### Bugs found and fixed this session
+
+1. **Real, pre-existing responsive bug** (not introduced today, but never exercised at phone
+   width until Day 3 needed Staff Mode to work on phones): the Day 1 dashboard shell's
+   sidebar was a fixed `w-60` column that overflowed horizontally below ~600px. Fixed by
+   stacking the shell vertically on small screens and making the nav scroll horizontally
+   instead of wrapping (`app/dashboard/layout.tsx`, `components/dashboard/sidebar-nav.tsx`).
+   Verified: 375px viewport now has zero horizontal overflow on both Staff Mode and the CRM.
+2. A newer `react-hooks/set-state-in-effect` ESLint rule (part of this project's React 19
+   toolchain) flagged three legitimate-looking `useEffect` + `setState` patterns (camera
+   status reset, platform detection, localStorage sync). Fixed two by switching to `key`-
+   based remounting / lazy `useState` initializers (the idiomatic fix); the third
+   (localStorage-on-mount, which must run in an effect specifically to avoid an SSR/hydration
+   mismatch) was a justified, commented exception — documented inline rather than contorted.
+3. No loyalty-engine bugs found — every RPC call across dozens of live test transactions
+   produced exactly the expected persisted state on the first architecturally-sound attempt.
+   Several apparent "failures" during testing turned out to be the test script reading the
+   DOM before an async round trip finished (~650–900ms per RPC call observed in server
+   logs); resolved by checking authoritative state via reload/CRM rather than trusting
+   fixed-delay client-side timing — the same lesson from Day 1/2, still worth restating.
+
+### Live acceptance tests performed (real data on the linked project, cleaned up after)
+
+- **Brew Café** (STAMPS, 5 → Free Regular Coffee), full scanner lifecycle: customer Ahmad's
+  card showed a real QR; staff pasted `/q/<token>` into the hardware-scanner input, saw
+  "✓ Customer found / Ahmad / •••• <real last 4 digits>" and correct live progress; recorded
+  transactions via the scanner panel and separately via the CRM profile (both call the exact
+  same Day 2 RPC); reached 5/5, reward "Free Regular Coffee" appeared automatically; redeemed
+  via the CRM; reload confirmed `REDEEMED` status persisted with a timestamp and no redeem
+  button remaining.
+- **Smash Padel** (STAMPS, 10 → 1 Free Court Hour), same scanner code, only config differs:
+  resolved customer "Sara" via search-fallback convergence (not the token path, to prove both
+  entry points reach the identical operational UI); topped up to exactly 10; reward generated
+  once, progress reset to 0/10 — confirms zero industry-specific branching survived from
+  Day 2 into the scanner layer.
+- **Reward-cancellation-on-reversal** (Part 31, the reason this was revisited): ran Ahmad
+  through a second 5-transaction cycle, reversed the reward-generating transaction *before*
+  redeeming — reward flipped `AVAILABLE → CANCELLED`, `reverse_transaction`'s JSON reported
+  `cancelled_reward_ids` with the right id and `reward_conflict: false`. Ran a third cycle,
+  *redeemed* the reward, then reversed that same transaction — the `REDEEMED` reward was left
+  completely untouched and the function reported `reward_conflict: true` instead. Both
+  outcomes exactly match the spec's required semantics.
+- **Cross-tenant scanner attack**: logged in as the Brew Café owner, fed Smash Padel's real
+  customer token into the scanner. Result: generic "This loyalty card couldn't be
+  recognized" — no name, no data, no hint that the token was valid *somewhere else*. A
+  second attempt with pure garbage input got the identical message.
+- **Staff permission test**: invited a STAFF account for Brew Café, logged in as that
+  account. Confirmed **allowed**: `/dashboard/scanner`, `/dashboard/customers` (their actual
+  job). Confirmed **blocked via direct URL, not just a hidden nav link**:
+  `/dashboard/billing`, `/dashboard/integrations`, `/dashboard/analytics`,
+  `/dashboard/loyalty` — every one server-side redirected to `/dashboard`. Confirmed the Team
+  page shows the roster but not the invite form for a STAFF viewer.
+- **Responsive**: 390px mobile customer card (with the new QR) — no overflow. 1024px tablet
+  landscape Staff Mode — no overflow. 375px phone Staff Mode — found and fixed the sidebar
+  bug above, then re-verified clean.
+- **Wallet buttons**: clicking "Add to Apple Wallet" on a real card correctly shows the
+  "isn't set up for this business yet" message (verified — the route genuinely returns 501
+  since no certificates are configured, not a fake success).
+
+### External blockers
+
+- **Apple Wallet**: needs an active Apple Developer Program membership, a Pass Type ID, its
+  signing certificate, and Apple's WWDR intermediate certificate. None of these exist in this
+  environment. `services/wallet/apple.ts` builds a correct `pass.json` payload but does not
+  (cannot, without the above) produce a signed `.pkpass`. **No real Apple Wallet pass has
+  been generated or tested.** See `docs/integrations.md` for the exact steps to unblock.
+- **Google Wallet**: needs a Google Cloud project with the Wallet API enabled, an approved
+  Google Wallet **Issuer account** (this approval step is external and can be slow), and a
+  service account JSON key. `services/wallet/google.ts` builds a correct Loyalty Object
+  payload but does not sign the JWT the real "Add to Google Wallet" link requires. **No real
+  Google Wallet object or save link has been generated or tested.**
+- Neither blocks anything else — the digital web card (with a real, scannable QR) is the
+  fully-working primary loyalty identity, exactly as the spec anticipated.
+- Everything from Session 1/2 (Stripe/WhatsApp/Twilio/Resend, still Day 4-5) is unchanged.
+
+### Known edge cases / simplifications
+
+- Staff invitation has no real email-sending yet (Day 4's Resend integration) — a new
+  account's temporary password is shown once in the dashboard UI for the owner to relay
+  manually. Documented as an explicit MVP placeholder, not a finished invite flow.
+- The camera scanner's actual QR-image decoding could not be exercised with a real photographed
+  QR code in this environment (headless Chromium has no physical camera, and there was no
+  second device available to scan a screen with). The scanner's non-camera mechanics
+  (permission/denied/no-camera/error states, start/stop/restart) were verified to render
+  correctly; the identical resolution and operational logic a successful camera scan would
+  trigger was verified thoroughly via the hardware-scanner-input path and the search-fallback
+  path, both of which call the exact same `resolveCustomerByToken`/`getOperationalView`
+  functions a decoded QR would. Recommend a manual phone-camera test against a deployed
+  preview before relying on this for a live demo.
+- `business_members` role-escalation is now closed at the DB level (migration 0014), fully
+  resolving the Day 1-documented gap.
+
+### Environment variables
+
+Added to `.env.example` (all currently empty — external setup pending, see above):
+`APPLE_TEAM_ID`, `APPLE_PASS_TYPE_ID`, `APPLE_WWDR_CERT`, `APPLE_SIGNER_CERT`,
+`APPLE_SIGNER_KEY`, `APPLE_SIGNER_KEY_PASSPHRASE`, `GOOGLE_WALLET_ISSUER_ID`,
+`GOOGLE_WALLET_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_WALLET_SERVICE_ACCOUNT_KEY`.
+
+### Database migrations created this session
+
+`0012_reversal_reward_cancellation`, `0013_wallet_token_rotation`, `0014_owner_role_guard` —
+all applied to the remote linked project, types regenerated.
+
+### What Day 4 can safely build on
+
+- The scanner's `resolveCustomerByToken`/`searchCustomers`/`getOperationalView` functions and
+  the shared `CustomerOperationalPanel` are the one true "identify + act on a customer" path
+  — any future operational UI should call these, not re-query `customer_summary` directly.
+- `business_integrations` (Day 1 schema) is still where Day 4's WhatsApp/SMS/Email connection
+  status belongs — nothing from Day 3 changes that plan.
+- Staff invitation exists but has no email step — Day 4's Resend integration is the natural
+  place to send a real "you've been added to the team" email instead of showing a password
+  in the dashboard.
+- Wallet payload mappers (`services/wallet/*`) are ready to receive real signing
+  implementations the moment certificates/service account exist — no redesign needed, just
+  fill in the gated function bodies.

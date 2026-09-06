@@ -55,19 +55,48 @@ path, zero industry-specific branches. Cross-tenant RLS and RPC isolation indepe
 verified (a Brew Café session could not read Smash Padel's customers/rewards, and RPC calls
 with a cross-tenant business/customer/program id were rejected server-side).
 
-## Day 3 — QR scanner + wallet + staff mode
+## Day 3 — QR scanner + wallet + staff mode ✅ complete, verified live
 
-- [ ] Staff Mode shell: large "Scan Customer" / "Search Customer" buttons, minimal nav
-- [ ] Browser camera QR scanner reading `customers.wallet_token`
-- [ ] Manual search fallback (phone/name/email)
-- [ ] Transaction confirmation screen → calls the Day 2 RPC
-- [ ] Digital loyalty card (web page, no wallet dependency) — ships regardless of wallet cert status
-- [ ] Apple/Google Wallet integration if credentials become available in time (see `docs/integrations.md`); otherwise architecture done, clearly marked EXTERNAL SETUP PENDING
-- [ ] Transaction history + reversal (writes a `REVERSAL` `loyalty_transactions` row, never deletes)
+- [x] Staff Mode shell (`/dashboard/scanner`): large "Scan Customer" / "Search Customer"
+      buttons, active location, recent transactions, staff identity
+- [x] Browser camera QR scanner (`@zxing/browser`) reading `customers.wallet_token` via a
+      `/q/<token>` URL — permission/denied/no-camera/error states, stops after a valid scan,
+      restart button (remounts cleanly, no imperative state reset)
+- [x] Hardware-scanner-compatible manual token input (types like a keyboard, per Day 1's
+      documented USB-scanner compatibility promise) + manual search fallback (phone/name/
+      email) — both converge on the exact same `CustomerOperationalPanel`, reusing the Day 2
+      `RecordTransactionForm`/`RedeemRewardButton` components unmodified in substance (only
+      an optional `onSuccess` callback added for the scanner's client-side refresh)
+- [x] Secure token resolution (`resolveCustomerByToken`): validates format, scopes to the
+      staff's own business twice over (explicit filter + RLS), identical generic error for
+      malformed/nonexistent/cross-tenant tokens
+- [x] Digital loyalty card (`/join/[slug]/card`) now has a real QR code, remaining-count
+      copy, last-updated timestamp, and Apple/Google Wallet buttons with graceful
+      unavailable states — ships regardless of wallet cert status
+- [x] Apple/Google Wallet: payload-mapping architecture complete and route-wired; signing
+      is EXTERNAL SETUP PENDING (no certificates/service account available) — see
+      `docs/integrations.md` for exact next steps. No `.pkpass` or Google save-link has been
+      generated; not claimed as working.
+- [x] Transaction reversal, revisited: reversing a transaction now also cancels a reward it
+      solely produced if still unredeemed (verified), and flags — without silently undoing —
+      the case where that reward was already redeemed (verified)
+- [x] Staff invitation (`/dashboard/team`): owner/manager can add a new or existing user as
+      STAFF/MANAGER (never OWNER — enforced at both the app layer and a new DB trigger)
+- [x] Role enforcement extended to direct URL access on billing/integrations/analytics/
+      loyalty (redirect, not just hidden nav) — verified with a real STAFF account
+- [x] Wallet token rotation RPC (`rotate_customer_wallet_token`), OWNER/MANAGER only
+- [x] Fixed a real, pre-existing responsive bug found during testing: the Day 1 dashboard
+      shell's fixed-width sidebar overflowed at phone width — now stacks/scrolls correctly
 
-**Day 3 acceptance test**: customer opens digital card, staff scans, customer profile loads,
-staff confirms a transaction, points/stamps update correctly, no points awarded by scanning
-alone.
+**Day 3 acceptance test**: ✅ **Verified live** for both Brew Café (STAMPS) and Smash Padel
+(STAMPS, different threshold/reward, identical code) — customer opens the digital card
+(shows a real QR), staff scans it (via the hardware-input path) or finds them by search,
+sees their name + last-4 phone + exact progress, records a transaction, sees the Day 2
+engine's real persisted result, reward unlocks automatically exactly once, redemption works
+and a second attempt is rejected. Cross-tenant scanner attack rejected (a Brew Café session
+scanning Smash Padel's customer token got the generic "couldn't be recognized" message, not
+a leak). No loyalty is ever awarded by scanning alone — see `docs/progress.md` for full
+results.
 
 ## Day 4 — Marketing + automations
 

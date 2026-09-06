@@ -1787,6 +1787,10 @@ export type Database = {
         }
         Returns: Json
       }
+      rotate_customer_wallet_token: {
+        Args: { p_business_id: string; p_customer_id: string }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

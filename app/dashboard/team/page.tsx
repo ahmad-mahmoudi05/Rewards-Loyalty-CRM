@@ -1,5 +1,6 @@
 import { requireBusinessContext } from "@/lib/dal";
 import { createClient } from "@/lib/supabase/server";
+import { InviteStaffForm } from "./invite-form";
 
 export default async function TeamPage() {
   const membership = await requireBusinessContext();
@@ -11,15 +12,19 @@ export default async function TeamPage() {
     .eq("business_id", membership.business_id)
     .order("created_at", { ascending: true });
 
+  const canManageTeam = membership.role === "OWNER" || membership.role === "MANAGER";
+
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold">Team</h1>
         <p className="text-sm text-foreground/70">
-          Owners and managers can invite staff later (Staff Mode ships Day 3). Staff never see
-          billing or integration credentials.
+          Staff can scan, search, record transactions, and redeem rewards. They never see
+          billing, integration credentials, or business settings.
         </p>
       </div>
+
+      {canManageTeam && <InviteStaffForm />}
 
       <div className="flex flex-col divide-y divide-foreground/10 rounded-lg border border-foreground/10">
         {members?.map((member) => (
