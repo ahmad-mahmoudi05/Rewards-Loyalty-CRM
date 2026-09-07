@@ -2,9 +2,9 @@ import Link from "next/link";
 
 const features = [
   {
-    title: "Digital loyalty & Wallet passes",
+    title: "Digital loyalty card",
     description:
-      "Stamps or points, your rules. Customers carry their card in Apple or Google Wallet — no app to download.",
+      "Stamps or points, your rules. Customers get a shareable digital card — no app to download. Apple & Google Wallet support is coming soon.",
   },
   {
     title: "Customer CRM",
@@ -50,8 +50,8 @@ export default function Home() {
           Turn first-time customers into loyal regulars
         </h1>
         <p className="max-w-xl text-base text-foreground/70 sm:text-lg">
-          Digital loyalty, customer CRM, Wallet passes, and automated WhatsApp, SMS, and
-          email marketing — all in one platform.
+          Digital loyalty, customer CRM, and WhatsApp, SMS, and email marketing —
+          all in one platform.
         </p>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Link

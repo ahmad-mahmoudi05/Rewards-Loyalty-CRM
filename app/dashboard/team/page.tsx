@@ -1,6 +1,7 @@
 import { requireBusinessContext } from "@/lib/dal";
 import { createClient } from "@/lib/supabase/server";
 import { InviteStaffForm } from "./invite-form";
+import { RevokeInvitationButton } from "./revoke-invitation-button";
 
 export default async function TeamPage() {
   const membership = await requireBusinessContext();
@@ -43,9 +44,12 @@ export default async function TeamPage() {
             {invitations.map((inv) => (
               <div key={inv.id} className="flex items-center justify-between px-4 py-3">
                 <span className="text-sm">{inv.email}</span>
-                <span className="text-xs text-foreground/60">
-                  {inv.role} · expires {new Date(inv.expires_at).toLocaleDateString()}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-foreground/60">
+                    {inv.role} · expires {new Date(inv.expires_at).toLocaleDateString()}
+                  </span>
+                  <RevokeInvitationButton invitationId={inv.id} />
+                </div>
               </div>
             ))}
           </div>

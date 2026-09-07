@@ -134,6 +134,13 @@ export async function processQueuedCampaigns() {
         result = await sendWhatsAppTemplate({
           config: integration?.status === "CONNECTED" ? (integration.config as WhatsAppIntegrationConfig) : null,
           to: recipient.channel_address,
+          // Fixed name, not the business's actually-synced template (see
+          // message_templates / "Sync templates" on /dashboard/integrations)
+          // — v1 doesn't offer per-campaign template selection. A real WABA
+          // must have an approved template named exactly "marketing_message"
+          // for campaign sends to succeed; documented as an explicit external
+          // setup requirement in docs/integrations.md, not left as a silent
+          // assumption.
           templateName: "marketing_message",
           languageCode: "en",
           parameters: [renderedMessage],

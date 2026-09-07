@@ -32,7 +32,11 @@ export async function signup(_state: SignupState, formData: FormData): Promise<S
   });
 
   if (error) {
-    return { error: error.message };
+    // Generic message, matching the no-enumeration policy already applied
+    // to login/forgot-password/auth-confirm — Supabase's own error text for
+    // a duplicate email ("User already registered") would otherwise reveal
+    // account existence, the one auth entry point that didn't follow suit.
+    return { error: "Could not create an account with those details. If you already have one, try logging in instead." };
   }
 
   if (!data.session) {

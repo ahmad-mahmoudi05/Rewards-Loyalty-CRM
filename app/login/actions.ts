@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { LoginSchema } from "@/lib/validation/auth";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { safeRedirectPath } from "@/lib/safe-redirect";
 
 export type LoginState = { error?: string } | undefined;
 
@@ -31,5 +32,5 @@ export async function login(_state: LoginState, formData: FormData): Promise<Log
   }
 
   const redirectTo = formData.get("redirectTo");
-  redirect(typeof redirectTo === "string" && redirectTo.startsWith("/") ? redirectTo : "/dashboard");
+  redirect(safeRedirectPath(typeof redirectTo === "string" ? redirectTo : null));
 }

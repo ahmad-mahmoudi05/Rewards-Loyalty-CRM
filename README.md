@@ -37,11 +37,15 @@ provider (what's tested, what's blocked on an external account) is in
    a working launch: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`,
    `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_APP_URL` (the real `https://your-app.vercel.app`
    URL, or your custom domain once purchased — see "Domain readiness" in
-   `docs/launch-checklist.md`), `RESEND_API_KEY` + `RESEND_WEBHOOK_SECRET`, and — new this
-   session — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-   `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`. WhatsApp/SMS/Wallet vars are optional — those
-   channels degrade gracefully (clear "not connected" states, never a broken button) with no
-   credentials at all.
+   `docs/launch-checklist.md`), `RESEND_API_KEY` + `RESEND_WEBHOOK_SECRET`,
+   `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, and
+   **`CRON_SECRET`** (set this to any random value — required as of the Session 7 revision:
+   `/api/campaigns/process` and `/api/automations/run` fail closed with no secret configured,
+   since an open, unauthenticated version of either route can trigger real message sends /
+   loyalty bonuses across every business on the platform; Vercel Cron sends this automatically
+   as a bearer token once the env var is set on the project, no extra config needed).
+   WhatsApp/SMS/Wallet vars are optional — those channels degrade gracefully (clear "not
+   connected" states, never a broken button) with no credentials at all.
 3. **Before the first deploy touches real traffic**, review and push
    `supabase/config.toml`'s `[auth]` section deliberately: update `site_url` and
    `additional_redirect_urls` to the real production URL (currently `localhost` — see the
@@ -62,8 +66,9 @@ provider (what's tested, what's blocked on an external account) is in
 5. **Deploy.** Vercel Cron (`vercel.json`, already committed) schedules
    `/api/campaigns/process` and `/api/automations/run` — note the free/Hobby Vercel plan
    only allows daily cron jobs, not the `*/10 * * * *`/hourly cadence configured; either
-   upgrade to Pro or manually trigger those routes (with `CRON_SECRET` set, an
-   `Authorization: Bearer <secret>` request) until then.
+   upgrade to Pro or manually trigger those routes yourself (an
+   `Authorization: Bearer <CRON_SECRET value>` request — required, both routes reject any
+   request without it) until then.
 6. **Test on the real production URL** — signup → onboarding → loyalty setup → join QR →
    customer join → scanner (a real phone camera, not localhost/headless — see
    `docs/progress.md` Session 3's documented limitation) → campaign send → billing checkout

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
+import { safeRedirectPath } from "@/lib/safe-redirect";
 
 /**
  * Handles every Supabase email-link verification (password recovery here,
@@ -32,6 +33,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL(`${destination}?error=link_expired`, request.url));
   }
 
-  const destination = type === "recovery" ? "/reset-password" : next.startsWith("/") ? next : "/dashboard";
+  const destination = type === "recovery" ? "/reset-password" : safeRedirectPath(next);
   return NextResponse.redirect(new URL(destination, request.url));
 }

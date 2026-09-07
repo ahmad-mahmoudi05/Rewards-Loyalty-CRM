@@ -35,11 +35,25 @@ export async function sendSms(params: {
   const client = twilio(params.config.accountSid, params.config.authToken);
 
   try {
+    // NOTE: `idempotencyKey` (params.idempotencyKey — the campaign_recipient
+    // or automation_run id) is accepted by this function's signature but
+    // NOT forwarded to Twilio below — the Messages resource's REST API has
+    // no idempotency-key parameter to forward it to (unlike Resend, see
+    // email.ts). The real protection against a double-send is upstream:
+    // campaign_recipients/automation_runs rows are claimed exactly once
+    // before this function is ever called (FOR UPDATE SKIP LOCKED / a
+    // unique dedupe-key constraint) and only reclaimed after a stuck-job
+    // timeout (see migration 0026 / claimAutomationRun) — so the residual
+    // risk is narrow: a crash between Twilio accepting this call and the
+    // caller recording that fact could cause exactly one retried resend
+    // after that timeout, never an unbounded loop of them. Documented here
+    // rather than implied by a comment on `statusCallback`, which is
+    // actually just the delivery-status webhook URL and has nothing to do
+    // with idempotency.
     const message = await client.messages.create({
       to: params.to,
       from: params.config.fromNumber,
       body: params.body,
-      // Twilio's own idempotency mechanism for the Messages resource.
       statusCallback: process.env.NEXT_PUBLIC_APP_URL
         ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/twilio`
         : undefined,

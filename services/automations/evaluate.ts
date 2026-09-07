@@ -20,6 +20,23 @@ function isoDate(value: string) {
   return value.slice(0, 10);
 }
 
+/**
+ * Month/day/year as seen in a specific IANA timezone, not server-UTC — used
+ * for birthday matching so a business several hours off UTC doesn't fire on
+ * the wrong local calendar day. Falls back to UTC if the stored timezone
+ * string is somehow invalid (Intl throws on construction, not on format).
+ */
+function partsInTimezone(date: Date, timeZone: string) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    const parts = formatter.formatToParts(date);
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+    return { year: get("year"), month: get("month") - 1, day: get("day") };
+  } catch {
+    return { year: date.getUTCFullYear(), month: date.getUTCMonth(), day: date.getUTCDate() };
+  }
+}
+
 async function getActiveProgramId(supabase: SupabaseClient<Database>, businessId: string) {
   const { data } = await supabase
     .from("loyalty_programs")
@@ -81,40 +98,65 @@ export async function evaluateInactiveWinback(
     .eq("business_id", business.id)
     .or(`last_transaction_at.lt.${cutoff},and(last_transaction_at.is.null,created_at.lt.${cutoff})`);
 
+  // cooldownDays: the dedupe key alone (below) changes the moment a
+  // customer returns and goes inactive again, which would let them be
+  // re-triggered with no minimum spacing — the UI promises a cooldown
+  // (automation-form.tsx), so enforce it here as a second, independent
+  // gate: has this automation already fired for this customer more
+  // recently than cooldownDays, regardless of dedupe key?
+  const cooldownCutoff = new Date(Date.now() - cfg.cooldownDays * 86400000).toISOString();
+  const { data: recentRuns } = await supabase
+    .from("automation_runs")
+    .select("customer_id")
+    .eq("automation_id", automation.id)
+    .gte("created_at", cooldownCutoff);
+  const cooledDownCustomerIds = new Set((recentRuns ?? []).map((r) => r.customer_id));
+
   const result = { ...EMPTY };
   for (const customer of customers ?? []) {
+    if (cooledDownCustomerIds.has(customer.id!)) continue;
     result.evaluated++;
-    const baselineDate = customer.last_transaction_at ?? customer.created_at;
-    const dedupeKey = `INACTIVE_${isoDate(baselineDate!)}`;
+    // One customer's failure (a thrown error from claimAutomationRun on a
+    // non-duplicate DB error, or from applyBonus/sendAutomationMessage)
+    // must not abort evaluation for the rest of this business's customers,
+    // or every other business/automation still queued in this cron tick —
+    // matches the campaign engine's existing per-recipient isolation.
+    try {
+      const baselineDate = customer.last_transaction_at ?? customer.created_at;
+      const dedupeKey = `INACTIVE_${isoDate(baselineDate!)}`;
 
-    const runId = await claimAutomationRun(supabase, {
-      automationId: automation.id,
-      businessId: business.id,
-      customerId: customer.id!,
-      dedupeKey,
-    });
-    if (!runId) continue; // already handled this cycle
+      const runId = await claimAutomationRun(supabase, {
+        automationId: automation.id,
+        businessId: business.id,
+        customerId: customer.id!,
+        dedupeKey,
+      });
+      if (!runId) continue; // already handled this cycle
 
-    await addSystemTag(supabase, business.id, customer.id!, "AT_RISK");
-    if (cfg.bonusType !== "NONE") {
-      await applyBonus(supabase, business.id, customer.id!, cfg.bonusType, cfg.bonusValue, "Inactive customer win-back bonus");
+      await addSystemTag(supabase, business.id, customer.id!, "AT_RISK");
+      if (cfg.bonusType !== "NONE") {
+        await applyBonus(supabase, business.id, customer.id!, cfg.bonusType, cfg.bonusValue, "Inactive customer win-back bonus");
+      }
+
+      const { sent, reason } = await sendAutomationMessage(supabase, {
+        runId,
+        business,
+        customer,
+        channel: automation.channel as "EMAIL" | "WHATSAPP" | "SMS",
+        message: cfg.message,
+        context: {
+          first_name: customer.first_name ?? "there",
+          business_name: business.name,
+          offer: cfg.bonusType === "BONUS_POINTS" ? `${cfg.bonusValue} bonus points` : cfg.bonusType === "BONUS_STAMPS" ? "a bonus stamp" : undefined,
+        },
+      });
+      if (sent) result.sent++;
+      else if (reason === "no_consent") result.skipped++;
+      else result.failed++;
+    } catch (err) {
+      console.error("[automations] INACTIVE_WINBACK failed for customer", customer.id, err);
+      result.failed++;
     }
-
-    const { sent, reason } = await sendAutomationMessage(supabase, {
-      runId,
-      business,
-      customer,
-      channel: automation.channel as "EMAIL" | "WHATSAPP" | "SMS",
-      message: cfg.message,
-      context: {
-        first_name: customer.first_name ?? "there",
-        business_name: business.name,
-        offer: cfg.bonusType === "BONUS_POINTS" ? `${cfg.bonusValue} bonus points` : cfg.bonusType === "BONUS_STAMPS" ? "a bonus stamp" : undefined,
-      },
-    });
-    if (sent) result.sent++;
-    else if (reason === "no_consent") result.skipped++;
-    else result.failed++;
   }
 
   // Clear AT_RISK from anyone who has since returned.
@@ -140,9 +182,8 @@ export async function evaluateBirthdayReward(
   const cfg = config.data;
 
   const target = new Date(Date.now() + cfg.leadDays * 86400000);
-  const targetMonth = target.getUTCMonth();
-  const targetDay = target.getUTCDate();
-  const year = new Date().getUTCFullYear();
+  const { month: targetMonth, day: targetDay } = partsInTimezone(target, business.timezone);
+  const { year } = partsInTimezone(new Date(), business.timezone);
 
   const { data: customers } = await supabase
     .from("customer_summary")
@@ -156,6 +197,7 @@ export async function evaluateBirthdayReward(
     if (bday.getUTCMonth() !== targetMonth || bday.getUTCDate() !== targetDay) continue;
     result.evaluated++;
 
+    try {
     const runId = await claimAutomationRun(supabase, {
       automationId: automation.id,
       businessId: business.id,
@@ -192,6 +234,10 @@ export async function evaluateBirthdayReward(
     if (sent) result.sent++;
     else if (reason === "no_consent") result.skipped++;
     else result.failed++;
+    } catch (err) {
+      console.error("[automations] BIRTHDAY_REWARD failed for customer", customer.id, err);
+      result.failed++;
+    }
   }
 
   return result;
@@ -218,6 +264,7 @@ export async function evaluateRewardReadyReminder(
   for (const reward of rewards ?? []) {
     result.evaluated++;
 
+    try {
     const runId = await claimAutomationRun(supabase, {
       automationId: automation.id,
       businessId: business.id,
@@ -279,6 +326,10 @@ export async function evaluateRewardReadyReminder(
         }
       }
     }
+    } catch (err) {
+      console.error("[automations] REWARD_READY_REMINDER failed for reward", reward.id, err);
+      result.failed++;
+    }
   }
 
   return result;
@@ -300,30 +351,35 @@ export async function evaluateVipUpgrade(
   const result = { ...EMPTY };
   for (const customer of customers ?? []) {
     result.evaluated++;
-    const runId = await claimAutomationRun(supabase, {
-      automationId: automation.id,
-      businessId: business.id,
-      customerId: customer.id!,
-      dedupeKey: "VIP",
-    });
-    if (!runId) continue;
+    try {
+      const runId = await claimAutomationRun(supabase, {
+        automationId: automation.id,
+        businessId: business.id,
+        customerId: customer.id!,
+        dedupeKey: "VIP",
+      });
+      if (!runId) continue;
 
-    await addSystemTag(supabase, business.id, customer.id!, "VIP");
-    if (cfg.bonusType !== "NONE") {
-      await applyBonus(supabase, business.id, customer.id!, cfg.bonusType, cfg.bonusValue, "VIP upgrade bonus");
+      await addSystemTag(supabase, business.id, customer.id!, "VIP");
+      if (cfg.bonusType !== "NONE") {
+        await applyBonus(supabase, business.id, customer.id!, cfg.bonusType, cfg.bonusValue, "VIP upgrade bonus");
+      }
+
+      const { sent, reason } = await sendAutomationMessage(supabase, {
+        runId,
+        business,
+        customer,
+        channel: automation.channel as "EMAIL" | "WHATSAPP" | "SMS",
+        message: cfg.message,
+        context: { first_name: customer.first_name ?? "there", business_name: business.name },
+      });
+      if (sent) result.sent++;
+      else if (reason === "no_consent") result.skipped++;
+      else result.failed++;
+    } catch (err) {
+      console.error("[automations] VIP_UPGRADE failed for customer", customer.id, err);
+      result.failed++;
     }
-
-    const { sent, reason } = await sendAutomationMessage(supabase, {
-      runId,
-      business,
-      customer,
-      channel: automation.channel as "EMAIL" | "WHATSAPP" | "SMS",
-      message: cfg.message,
-      context: { first_name: customer.first_name ?? "there", business_name: business.name },
-    });
-    if (sent) result.sent++;
-    else if (reason === "no_consent") result.skipped++;
-    else result.failed++;
   }
 
   return result;

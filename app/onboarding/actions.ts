@@ -36,6 +36,21 @@ export async function createBusiness(
     redirect("/login");
   }
 
+  // Double-submit / retried-request guard: onboarding is a multi-statement
+  // sequence (no cross-REST-call transaction available), so a second
+  // near-simultaneous submission must not create a second business for the
+  // same person. If this user already has a membership by the time this
+  // action runs, treat it as already done rather than creating a duplicate.
+  const { data: existingMembership } = await supabase
+    .from("business_members")
+    .select("id")
+    .eq("profile_id", user!.id)
+    .limit(1)
+    .maybeSingle();
+  if (existingMembership) {
+    redirect("/dashboard");
+  }
+
   const baseSlug = slugify(parsed.data.businessName) || "business";
   const slug = `${baseSlug}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -58,7 +73,8 @@ export async function createBusiness(
   });
 
   if (businessError) {
-    return { error: businessError.message };
+    console.error("[onboarding] businesses insert failed", businessError);
+    return { error: "Could not create your business. Please try again." };
   }
 
   const { data: business, error: fetchError } = await supabase
@@ -68,7 +84,20 @@ export async function createBusiness(
     .single();
 
   if (fetchError || !business) {
-    return { error: fetchError?.message ?? "Could not create business." };
+    console.error("[onboarding] business read-back failed", fetchError);
+    return { error: "Could not create your business. Please try again." };
+  }
+
+  // No cross-statement transaction is available here (each of these is a
+  // separate PostgREST call) — if branding or the first location fails
+  // partway through, compensate by deleting the business we just created
+  // (cascades to business_branding/business_members/locations/subscriptions)
+  // rather than leaving an orphaned, half-created business that
+  // getCurrentBusinessMembership would otherwise treat as "already
+  // onboarded" and redirect the user straight past, with no way back in to
+  // finish setup.
+  async function rollbackBusiness() {
+    await supabase.from("businesses").delete().eq("id", business!.id);
   }
 
   const { error: brandingError } = await supabase.from("business_branding").insert({
@@ -76,7 +105,9 @@ export async function createBusiness(
   });
 
   if (brandingError) {
-    return { error: brandingError.message };
+    console.error("[onboarding] business_branding insert failed", brandingError);
+    await rollbackBusiness();
+    return { error: "Could not finish setting up your business. Please try again." };
   }
 
   const { error: locationError } = await supabase.from("locations").insert({
@@ -89,7 +120,9 @@ export async function createBusiness(
   });
 
   if (locationError) {
-    return { error: locationError.message };
+    console.error("[onboarding] locations insert failed", locationError);
+    await rollbackBusiness();
+    return { error: "Could not finish setting up your business. Please try again." };
   }
 
   // Every business starts on a 14-day trial of the chosen plan, no payment
@@ -101,15 +134,26 @@ export async function createBusiness(
   // separate statement, not chained RETURNING off the businesses insert —
   // see the Day 1 gotcha documented in docs/database.md), so
   // private.business_role(business_id) = 'OWNER' evaluates correctly here.
+  //
+  // A failure here is deliberately NOT fatal to onboarding (the business/
+  // location/branding are real and useful even without a subscription row,
+  // and lib/entitlements.ts falls back to the most restrictive state when
+  // one is missing) — but it must not be silent. Logged so it's actually
+  // visible instead of vanishing, unlike before this revision.
   const { data: plan } = await supabase.from("plans").select("id").eq("code", parsed.data.planCode).single();
   if (plan) {
     const trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString();
-    await supabase.from("subscriptions").insert({
+    const { error: subscriptionError } = await supabase.from("subscriptions").insert({
       business_id: business.id,
       plan_id: plan.id,
       status: "TRIALING",
       trial_ends_at: trialEndsAt,
     });
+    if (subscriptionError) {
+      console.error("[onboarding] trial subscription insert failed", business.id, subscriptionError);
+    }
+  } else {
+    console.error("[onboarding] no plan found for code", parsed.data.planCode, "- business", business.id, "has no subscription");
   }
 
   redirect("/dashboard");

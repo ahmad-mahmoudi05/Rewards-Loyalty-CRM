@@ -33,6 +33,8 @@ reproducible and reviewable.
 | `0022_provider_webhooks.sql` | `inbound_messages`; template sync columns; removes `LOYALTY_EXPIRY_REMINDER` |
 | `0023_message_templates_upsert_fix.sql` | Fixes a partial-index/`ON CONFLICT` bug found while building template sync |
 | `0024_stripe_billing.sql` | `plans.stripe_price_id`, `subscriptions.trial_ends_at`, widened status set, `subscriptions_insert_owner_once` RLS, `stripe_webhook_events` |
+| `0025_pre_deployment_revision.sql` | Fixes `reverse_transaction` double-reversal race, `accept_business_invitation` email binding, `business_members` owner-takeover gap, adds `business_invitations` revoke policy, `loyalty_programs` CHECK constraints, shared reward-threshold evaluator (fixes multi-crossing + automation-bonus reward generation) |
+| `0026_stuck_job_recovery.sql` | `campaign_recipients.claimed_at` + stale-`SENDING` reclaim in `claim_queued_recipients` |
 
 ## Design choices worth remembering
 
@@ -65,12 +67,18 @@ reproducible and reviewable.
   staff permission toggles (the `business_members.permissions` jsonb column) are an
   application-layer concern for the Staff Mode UI (Day 3), not yet enforced by RLS — RLS
   gives us the coarse, unbypassable boundary; the UI gives the fine-grained one.
-- **`business_members` role-escalation guard is app-layer only for now**: RLS lets any
-  OWNER/MANAGER insert/update/delete `business_members` rows, including setting someone to
-  OWNER. A MANAGER promoting themselves to OWNER is a real gap — flagged here so Day 1/2 adds
-  a trigger or check constraint (e.g. "at most the business creator can ever hold OWNER, or
-  only an existing OWNER can grant OWNER") before this matters in practice (no multi-staff
-  business exists yet in the MVP flow).
+- **`business_members` role-escalation guard is enforced at the DB level, in two layers**:
+  migration `0014` blocks any write that would set `role = 'OWNER'` while another OWNER row
+  already exists; migration `0025` (Session 7 revision) closed a real gap that left in that
+  first version — 0014 didn't fire on DELETE, and didn't stop an UPDATE that demoted or
+  removed the *current* owner's row, so a MANAGER could demote the owner (one ordinary write,
+  `new.role` isn't `'OWNER'` so 0014 doesn't fire) and then promote themselves (0014's "another
+  owner already exists" check is now false) — a full two-step business takeover, using RLS
+  writes the app itself already permits MANAGER to make. Fixed by also blocking any
+  UPDATE/DELETE against a row currently holding OWNER unless the actor is that same person or
+  a platform admin. Verified live (see `docs/progress.md` Session 7): a MANAGER can no longer
+  demote the OWNER's row, delete it, or promote themselves once the OWNER's row is
+  untouched.
 - **Row-owner RLS bypass mechanism**: `private.is_business_member()` and friends are
   `SECURITY DEFINER` functions. In Postgres, a table's owner (here, `postgres`, since
   migrations run as `postgres`) is exempt from that table's own RLS unless
@@ -208,12 +216,22 @@ unwinding a reward that might already be redeemed is a materially bigger problem
   Permanent vs transient is decided per-provider (Resend's `error.name`, Meta's HTTP status,
   Twilio's `status`) — verified live: a Resend `validation_error` (invalid recipient) was
   correctly classified permanent and never retried.
-- **Idempotency**: `campaign_recipients.id` (or `automation_runs.id`) is passed as the
-  provider's own idempotency key on every send call (Resend's `idempotencyKey` option,
-  Twilio's `statusCallback`-linked message SID) — a worker retry of the same row can never
-  cause two provider sends for the intended recipient. Verified live: two concurrent
+- **Idempotency, corrected in Session 7 — was overstated here before**: `campaign_recipients.id`
+  (or `automation_runs.id`) is passed through the send helpers as `idempotencyKey`, but only
+  Resend's SDK actually has a parameter to forward it to (`resend.emails.send({...,
+  idempotencyKey})`, see `services/messaging/email.ts`) — neither Twilio's Messages resource
+  nor Meta's Cloud API template-send endpoint accept an idempotency key at all, so it's a
+  no-op for WhatsApp/SMS (see the comment in `services/messaging/sms.ts` for the full
+  explanation). The real protection for all three channels is upstream, not the provider call
+  itself: a recipient/run is claimed exactly once (`FOR UPDATE SKIP LOCKED` /
+  a unique dedupe-key constraint) before the provider is ever called, and only reclaimed after
+  a stuck-job timeout (migration `0026`) — so the residual risk is a narrow one, bounded to "a
+  crash in the exact window between the provider accepting a send and this system recording
+  that fact," not an unbounded double-send risk. Verified live: two concurrent
   `claim_queued_recipients` calls against the same batch never both claimed the same row
-  (`attempt_count` stayed exactly 1 per recipient across the whole run).
+  (`attempt_count` stayed exactly 1 per recipient across the whole run); a stale `SENDING`
+  row and a stuck `QUEUED` automation run are both correctly reclaimed after the timeout (see
+  `docs/progress.md` Session 7).
 - **Background processing**: chosen path is Next.js's `after()` (fires the first processing
   pass immediately when a campaign is sent, without making the owner wait — see Part 35's
   "return to UI immediately") plus a `/api/campaigns/process` route meant to be hit by a
@@ -417,14 +435,124 @@ call (a new statement) to read it back. Keep this in mind when writing the Day 2
 RPCs — anywhere a trigger grants the access a subsequent read depends on, split the write
 and the read-back into two statements.
 
+## Session 7 (final pre-deployment revision) — real bugs found and fixed
+
+A full read-through of every migration, RPC, RLS policy, and call site (not a re-check of
+prior Day reports — see `docs/progress.md` Session 7 "Rule 1") surfaced several genuine
+defects, all fixed in `0025_pre_deployment_revision.sql` / `0026_stuck_job_recovery.sql`:
+
+- **`reverse_transaction` double-reversal race (P0)**: the original body (`0012`) read the
+  transaction's status with a plain `SELECT`, then later did an unconditional `UPDATE`. Two
+  concurrent calls for the same transaction could both pass the "not already VOID" check
+  before either committed, both insert a `REVERSAL` ledger row, and both decrement
+  `loyalty_accounts` — double-reversing a single transaction. Fixed with `SELECT ... FOR
+  UPDATE`, serializing concurrent callers on the same row so the second caller's check runs
+  against the first caller's committed result. **Verified live** with two genuinely
+  simultaneous RPC calls (`Promise.all`): exactly one succeeds, exactly one `REVERSAL` ledger
+  row exists, the balance is decremented exactly once.
+- **`accept_business_invitation` didn't verify invitee identity (P0)**: validated the token
+  (exists / not accepted / not expired) but never checked the authenticated caller's email
+  against the invitation's target email — that check only existed in the Next.js server
+  action, which this RPC (granted to `authenticated`, callable directly via PostgREST)
+  bypassed entirely. A leaked/forwarded invite token let *any* authenticated account join the
+  target business at the invited role. Fixed by checking `auth.uid()`'s own profile email
+  against the invitation inside the function itself. **Verified live**: an unrelated
+  authenticated user is rejected; the actually-invited email can still accept normally.
+- **`business_members` owner-takeover via demote-then-promote (P0)**: migration `0014`'s
+  guard only blocked a write that set `role = 'OWNER'` while another OWNER already existed —
+  it didn't fire on DELETE and didn't stop demoting the *current* owner. Since any MANAGER can
+  write any `business_members` row for their business, a MANAGER could demote the owner (one
+  ordinary UPDATE, `0014`'s trigger doesn't fire since `new.role` isn't `'OWNER'`) then promote
+  themselves (now the only "another owner" check is false) — full business takeover in two
+  writes, both already permitted by the app's own RLS policy. Fixed by also blocking any
+  UPDATE/DELETE against a row currently holding OWNER unless the actor is that same person or
+  a platform admin. **Verified live**: both steps of the attack independently rejected.
+- **`loyalty_programs` missing DB-level validation (P1)**: only `stamp_required_count` had a
+  CHECK constraint; `points_per_currency_unit`/`points_reward_threshold`/
+  `points_min_transaction_value`/`stamp_min_transaction_value`/`reward_value`/
+  `reward_expiry_days` had none. The zod schema (`lib/validation/loyalty.ts`) rejects
+  zero/negative values, but `loyalty_programs` has a normal owner/manager RLS write policy, so
+  a direct PostgREST call bypassed the app-layer check entirely — e.g. a negative
+  `points_reward_threshold` would make every transaction immediately "qualify" for a reward.
+  Fixed with matching CHECK constraints at the table level. **Verified live**: a negative
+  threshold/rate is rejected by the database itself, independent of the app.
+- **Reward generation only checked the threshold once per call (P2)**: a single transaction
+  large enough to cross a resetting POINTS threshold more than once (e.g. threshold 100,
+  balance jumps 50 → 350 in one purchase) only granted one reward and left the account sitting
+  above threshold until a later transaction caught up. Separately, `grant_automation_bonus`
+  never checked the threshold at all — an automation bonus that pushed a customer over it
+  granted no reward, silently different from every other way loyalty value is earned. Both
+  fixed by extracting the exact reward-generation logic into
+  `private.evaluate_and_grant_rewards`, now looped (bounded — a non-resetting program still
+  grants at most once per call, matching original behavior and avoiding an infinite loop) and
+  called from both `record_transaction` and `grant_automation_bonus`. **Verified live**: a
+  350-point single-transaction earn at a 100-point threshold now generates 3 rewards and lands
+  the balance at 50; an automation bonus crossing a stamp threshold now generates a reward.
+- **Campaign/automation stuck-job recovery (P2, spec Phase 34 explicitly asked for this)**:
+  `claim_queued_recipients` only ever claimed `QUEUED` rows — a worker crash between a
+  provider accepting a send and the status write left that recipient stuck at `SENDING`
+  forever (never retried, and the campaign could never finalize). `claimAutomationRun` had a
+  worse version of the same problem: a stuck `QUEUED` automation run could never be retried at
+  all, since its own unique dedupe-key constraint treated "already inserted" as "already
+  handled" regardless of whether it ever actually completed. Fixed with a bounded stale-job
+  reclaim in both places (10-minute timeout). Honest residual risk, not a stronger guarantee
+  than the architecture provides: reclaiming assumes the crash happened before the provider
+  accepted the message; if it crashed just after, the reclaimed job resends — a real,
+  accepted, narrow-window trade-off (see `docs/integrations.md` "Idempotent sends"),
+  documented rather than silently possible. **Verified live**: an artificially-aged `SENDING`
+  recipient and a stuck `QUEUED` automation run are both correctly reclaimed after the
+  timeout.
+- **Auth open redirect (P1)**: three call sites (`app/login/actions.ts`, `app/login/page.tsx`,
+  `app/auth/confirm/route.ts`) checked only `value.startsWith("/")`, which still lets
+  `//evil.com/x` through — browsers resolve a leading `//` as protocol-relative to a different
+  host. Fixed with a shared `lib/safe-redirect.ts` helper used at all three sites.
+- **Onboarding wasn't atomic and swallowed a subscription-insert error (P1)**: each step
+  (business → branding → location → subscription) is a separate PostgREST call with no
+  cross-statement transaction available; a failure partway through left an orphaned business +
+  OWNER membership that `getCurrentBusinessMembership` would then treat as "already onboarded"
+  forever, with no way back in to finish setup. Separately, a failed/skipped subscription
+  insert was never surfaced anywhere, not even a server log. Fixed: a compensating delete of
+  the business row on branding/location failure (cascades cleanly), a double-submit guard
+  (checks for an existing membership before creating a second business), and the subscription
+  path now logs failures instead of silently vanishing.
+- **Cron routes failed open (P1)**: `/api/campaigns/process` and `/api/automations/run` only
+  checked `CRON_SECRET` *if it was set* — an unset value (the actual local-dev/`.env.example`
+  default) left both routes open to any unauthenticated caller on the public internet, one of
+  which sends real messages and the other grants real loyalty bonuses across every business on
+  the platform. Fixed to fail closed: no secret configured now means no access, not open
+  access.
+- **Signup account-enumeration inconsistency (P2)**: login/forgot-password/auth-confirm all
+  deliberately return a generic message regardless of whether the account exists; signup
+  returned Supabase's raw error text (`"User already registered"` for a duplicate email),
+  revealing account existence — the one auth entry point that didn't follow the pattern the
+  other three already established. Fixed to match.
+- **Settings/Rewards/Branding were still Day 1 placeholder stubs**: three prominently-linked
+  sidebar pages had no real functionality despite the project's own progress notes claiming a
+  complete MVP. Built the minimum real version of each this session — see
+  `app/dashboard/{settings,branding,rewards}/`.
+
 ## Known simplifications (documented on purpose, revisit if wrong)
 
 - One reward tier per `loyalty_programs` row (no tiers/bronze-silver-gold yet — spec explicitly
   defers this, §10).
 - `customer_consents` stores current status per channel, not a full history ledger. If we
   need "show me every consent change over time," add a `customer_consent_events` append-only
-  table later; the `audit_logs` table already captures who/when for anything routed through
-  it.
+  table later.
 - No soft-delete columns yet (`deleted_at`) — nothing deletes real business data yet in the
   MVP flows, so this is deferred until the "cancel subscription" / "customer data deletion
   request" work in a later pass (spec §45).
+- **`audit_logs` (migration `0007`) exists — table, RLS, OWNER/MANAGER-only SELECT — but
+  nothing in the application writes to it.** Found during the Session 7 revision (see below):
+  the schema and an earlier draft of this doc implied it was already capturing sensitive
+  actions; it isn't. Sensitive events (role changes, reversals, billing state transitions,
+  integration connects) currently have no audit trail beyond the domain tables' own
+  timestamps. Deliberately not wired up this session — instrumenting every sensitive call site
+  is real scope, not a one-line fix, and the P0/P1 security gaps took priority. Flagged
+  explicitly rather than left to be rediscovered; a real launch should decide whether this is
+  needed before onboarding businesses that require it for compliance.
+- **Search filters built via PostgREST `.or()` string interpolation** (`app/dashboard/scanner/
+  actions.ts`, `app/dashboard/customers/page.tsx`) pass the raw search term into the filter
+  expression without escaping commas/parens/wildcards. `business_id` is always a separate,
+  ANDed `.eq()`, so this cannot cross a tenant boundary — worst case is a crafted search term
+  producing an unintended filter within the searcher's own already-visible data. Left as
+  documented, low-severity debt rather than fixed this session (Session 7 audit finding).

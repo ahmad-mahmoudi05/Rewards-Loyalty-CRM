@@ -12,12 +12,14 @@ import { processQueuedCampaigns } from "@/services/campaigns/process";
  * this route in production.
  */
 export async function GET(request: NextRequest) {
+  // Fail closed: this route sends real messages to every business's queued
+  // recipients, so an unset CRON_SECRET must reject, not skip the check.
+  // (A missing secret used to leave this endpoint open to the public
+  // internet — see docs/progress.md "Session 7".)
   const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const authHeader = request.headers.get("authorization");
-    if (authHeader !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authHeader = request.headers.get("authorization");
+  if (!secret || authHeader !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const result = await processQueuedCampaigns();

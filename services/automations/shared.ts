@@ -13,6 +13,8 @@ type Business = Database["public"]["Tables"]["businesses"]["Row"];
 type CustomerSummary = Database["public"]["Views"]["customer_summary"]["Row"];
 type Channel = "EMAIL" | "WHATSAPP" | "SMS";
 
+const STUCK_RUN_TIMEOUT_MS = 10 * 60_000;
+
 /**
  * Atomically claims the right to run this automation for this
  * customer/dedupe-key combination. The unique(automation_id, customer_id,
@@ -20,11 +22,30 @@ type Channel = "EMAIL" | "WHATSAPP" | "SMS";
  * "insert first, ask permission never" rather than "check then insert",
  * which is what makes concurrent scheduler runs safe (Part 56/74/75).
  * Returns null if this exact run already exists (already handled, skip).
+ *
+ * Stuck-job recovery: sendAutomationMessage is what eventually flips this
+ * row from QUEUED to SENT/SKIPPED/FAILED. If the process crashes between
+ * this insert and that update, the row is stuck at QUEUED forever — and
+ * because the unique constraint is what "already handled" means here, that
+ * customer could NEVER be retried for this exact dedupe key again, unlike
+ * the campaign queue's SENDING rows (which at least get reclaimed, see
+ * migration 0026). Fixed by clearing a stale QUEUED row for this exact key
+ * before attempting the insert, so a genuinely stuck run gets one more
+ * attempt on the next scheduler tick instead of being silently lost.
  */
 export async function claimAutomationRun(
   supabase: SupabaseClient<Database>,
   params: { automationId: string; businessId: string; customerId: string; dedupeKey: string; triggerEntityId?: string }
 ): Promise<string | null> {
+  await supabase
+    .from("automation_runs")
+    .delete()
+    .eq("automation_id", params.automationId)
+    .eq("customer_id", params.customerId)
+    .eq("dedupe_key", params.dedupeKey)
+    .eq("status", "QUEUED")
+    .lt("triggered_at", new Date(Date.now() - STUCK_RUN_TIMEOUT_MS).toISOString());
+
   const { data, error } = await supabase
     .from("automation_runs")
     .insert({
@@ -107,6 +128,9 @@ export async function sendAutomationMessage(
       result = await sendWhatsAppTemplate({
         config: integration?.status === "CONNECTED" ? (integration.config as WhatsAppIntegrationConfig) : null,
         to: params.customer.phone_normalized,
+        // Same fixed-name limitation as services/campaigns/process.ts — a
+        // real WABA must have an approved template named exactly
+        // "automation_message". See docs/integrations.md.
         templateName: "automation_message",
         languageCode: "en",
         parameters: [rendered],

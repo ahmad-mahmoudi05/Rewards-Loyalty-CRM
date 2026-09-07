@@ -84,7 +84,12 @@ export async function saveLoyaltyProgram(
 
   const { error } =
     typeof programId === "string" && programId.length > 0
-      ? await supabase.from("loyalty_programs").update(record).eq("id", programId)
+      ? // .eq("business_id", ...) alongside .eq("id", ...) is defense in
+        // depth, not the primary guard (RLS's USING clause on this table
+        // already blocks a cross-tenant id) — but every other action in
+        // this codebase pairs an app-layer business_id filter with RLS, so
+        // this update matches that pattern instead of relying on RLS alone.
+        await supabase.from("loyalty_programs").update(record).eq("id", programId).eq("business_id", membership.business_id)
       : await supabase.from("loyalty_programs").insert(record);
 
   if (error) {

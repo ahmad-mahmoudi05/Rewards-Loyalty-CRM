@@ -48,6 +48,12 @@ export async function sendWhatsAppTemplate(params: {
     throw new ProviderNotConnectedError("WHATSAPP");
   }
 
+  // Same note as services/messaging/sms.ts: `idempotencyKey` isn't
+  // forwarded to Meta's Cloud API below (its template-message endpoint has
+  // no idempotency-key parameter either) — protection against a double-send
+  // is the same upstream claim-once-then-timeout-reclaim mechanism, not
+  // this call. See sms.ts for the full explanation; not repeated at every
+  // call site.
   try {
     const res = await fetch(
       `https://graph.facebook.com/${GRAPH_API_VERSION}/${params.config.phoneNumberId}/messages`,

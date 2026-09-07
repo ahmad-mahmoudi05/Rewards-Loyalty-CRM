@@ -1033,3 +1033,207 @@ into `.env.example` yet either).
 - Nothing about the architecture blocks that — every provider integration, every entitlement
   check, and every webhook this session built is real, tested code waiting for real
   credentials, not a stub.
+
+## 2026-09-08 — Session 7 (final pre-deployment revision)
+
+Not a feature day. The instruction was explicit: review the entire codebase as one complete
+product, verify every prior claim against the actual code rather than trusting Day reports,
+find anything incomplete/unsafe/inconsistent/fake, and fix everything fixable locally without
+external credentials.
+
+### Approach
+
+Read every migration, RPC, RLS policy, webhook route, server action, and validation schema.
+Ran a static scan for TODO/FIXME/console.log/`any`/unjustified eslint-disable/hardcoded
+secrets (all clean — no findings). Dispatched five parallel deep-audit passes covering (1)
+multi-tenancy/RLS/SECURITY DEFINER functions, (2) auth/onboarding/billing/entitlements, (3)
+loyalty engine/scanner/wallet/CRM, (4) campaigns/automations/provider webhooks, (5) UI honesty/
+empty states/docs accuracy — each read-only, reporting concrete file:line findings with a
+severity, no speculation. Then fixed every real finding, wrote synthetic live tests against
+the linked Supabase project for every database-level fix, and updated docs to match reality.
+
+### Bugs found and fixed
+
+**P0 — security/data corruption:**
+
+1. **`reverse_transaction` double-reversal race.** The status check was a plain `SELECT`
+   before an unconditional `UPDATE` — two concurrent calls for the same transaction could both
+   pass the guard before either committed, double-reversing it (duplicate `REVERSAL` ledger
+   rows, balance decremented twice). Fixed with `SELECT ... FOR UPDATE` to serialize concurrent
+   callers. Verified live with genuinely simultaneous `Promise.all` RPC calls: exactly one
+   succeeds.
+2. **`accept_business_invitation` never verified the caller's email matched the invitation.**
+   The email check only existed in the Next.js server action; the RPC itself (callable directly
+   via PostgREST by any authenticated user) didn't enforce it, so a leaked/forwarded invite
+   token let an unrelated account join the business at the invited role. Fixed inside the
+   function. Verified live: an unrelated user is rejected, the correctly-invited email still
+   works.
+3. **`business_members` demote-then-promote owner takeover.** Migration 0014's guard only
+   blocked *creating* a second OWNER — it didn't stop a MANAGER from demoting the current
+   owner's row (ordinary UPDATE, guard doesn't fire) and then promoting themselves (now the
+   "another owner exists" check is false). Two ordinary writes, both already permitted by
+   existing RLS, full takeover. Fixed by blocking any UPDATE/DELETE against a row currently
+   holding OWNER unless the actor is that same person or a platform admin. Verified live: both
+   steps independently rejected.
+
+**P1 — core workflow broken / real security hygiene gaps:**
+
+4. Auth open redirect at 3 sites (`app/login/actions.ts`, `app/login/page.tsx`,
+   `app/auth/confirm/route.ts`) — a bare `.startsWith("/")` check still lets `//evil.com/x`
+   through. Fixed with a shared `lib/safe-redirect.ts` helper.
+5. Onboarding wasn't atomic and could strand a user in a half-created, unrecoverable state — a
+   branding/location failure after the business insert left an orphaned business +
+   membership that the dashboard-redirect logic would then treat as "done," with no way back
+   in. Fixed with a compensating delete on failure and a double-submit guard (an existing
+   membership short-circuits to `/dashboard` instead of creating a second business).
+6. A failed/skipped trial-subscription insert during onboarding was completely silent — not
+   even logged. Fixed to log loudly; still non-fatal to onboarding itself (a business without a
+   subscription row correctly falls back to the most restrictive entitlements, per existing
+   design — "do not destroy data").
+7. `loyalty_programs` had no DB-level validation on `points_per_currency_unit`/
+   `points_reward_threshold`/`points_min_transaction_value`/`stamp_min_transaction_value`/
+   `reward_value`/`reward_expiry_days` — only the app-layer zod schema rejected bad values, and
+   that schema is bypassable via a direct PostgREST write (the table has a normal owner/manager
+   RLS write policy). A negative `points_reward_threshold` would have made every transaction
+   immediately reward-eligible. Fixed with matching CHECK constraints. Verified live.
+8. Both cron routes (`/api/campaigns/process`, `/api/automations/run`) failed **open** when
+   `CRON_SECRET` was unset — the actual state of `.env.example`'s own default — leaving both
+   open to any unauthenticated internet caller. One sends real messages, the other grants real
+   loyalty bonuses, across every business on the platform. Fixed to fail closed.
+9. Settings, Rewards, and Branding were still literal Day 1 `PlaceholderPage` stubs — three
+   prominently-linked sidebar pages with zero functionality, despite the project's own commit
+   history and progress notes describing a complete MVP. Built the minimum real version of
+   each (business profile edit, branding logo/colors/button-style edit, business-wide reward
+   list with status filter) — see "Bugs found" isn't quite the right word for this one, it's a
+   real gap more than a bug, but it's listed here because it was silently unflagged in every
+   prior "launch status" summary.
+
+**P2 — reliability / correctness edge cases:**
+
+10. Reward generation only checked the threshold once per `record_transaction` call — a single
+    transaction big enough to cross a resetting POINTS threshold more than once (e.g. threshold
+    100, balance jumps 50 → 350) only granted one reward. Separately, `grant_automation_bonus`
+    never checked the threshold at all, so an automation bonus crossing it silently granted no
+    reward — the only place loyalty value could be earned without the same reward-generation
+    guarantee as everywhere else. Fixed by extracting the logic into
+    `private.evaluate_and_grant_rewards`, looped (bounded to avoid an infinite loop on
+    non-resetting programs) and shared by both call sites. Verified live: a 350pt earn at a
+    100pt threshold now grants 3 rewards and lands the balance at 50; an automation bonus
+    crossing a threshold now grants a reward.
+11. Stuck-job recovery was missing for both queues. `claim_queued_recipients` only claimed
+    `QUEUED` rows — a worker crash between a provider accepting a send and the status write
+    left that recipient stuck at `SENDING` forever (never retried, campaign never finalizes).
+    `claimAutomationRun` had the same problem in a worse form: a stuck `QUEUED` run could never
+    be retried at all, since its own dedupe-key uniqueness treated "inserted" as "handled."
+    Fixed both with a bounded (10-minute) stale-job reclaim. Documented the honest residual
+    risk (a crash *just after* provider acceptance means the reclaimed job resends) rather than
+    claiming a stronger guarantee than the architecture provides. Verified live for both.
+12. Signup was the one auth entry point that leaked account existence (Supabase's raw "User
+    already registered" text), inconsistent with login/forgot-password/auth-confirm's
+    deliberate no-enumeration policy. Fixed to match.
+13. Misleading idempotency-key comments in `services/messaging/sms.ts`/`whatsapp.ts` implied
+    protection against a double-send that doesn't actually exist at the provider-call level
+    (neither Twilio's Messages API nor Meta's Cloud API accept an idempotency key at all) —
+    replaced with an honest explanation of where the real protection actually comes from
+    (upstream claim-once-then-timeout-reclaim, see #11).
+
+**P3 — polish / accuracy:**
+
+14. Birthday automation compared dates using server-UTC only, not the business's own timezone
+    — fixed with an `Intl.DateTimeFormat`-based per-timezone month/day/year computation.
+15. A code comment in `app/api/automations/run/route.ts` claimed VIP_UPGRADE was additionally
+    event-driven off `record_transaction`; no such call site exists anywhere in the codebase.
+    Corrected the comment — VIP_UPGRADE is cron-only, which is harmless (still fires exactly
+    once) but was misdescribed for a future maintainer.
+16. The landing page's "Digital loyalty & Wallet passes" feature card and hero copy stated
+    Apple/Google Wallet as an available capability today with no qualification — verified
+    against `services/wallet/{apple,google}.ts`: both require real certificates/service-account
+    credentials that don't exist in this environment, and the API routes correctly return 501.
+    Reworded to lead with the real, working digital card and mark Wallet as "coming soon."
+17. The team-invite email interpolated the business's own name directly into raw HTML with no
+    escaping — low severity (the "attacker" would be the account's own owner targeting their
+    own invitee), but every other outbound email template in the codebase already escapes this
+    class of input. Fixed to match, reusing the existing `escapeHtml` helper (exported from
+    `services/messaging/email-template.ts` rather than duplicated).
+18. `business_invitations` had no UPDATE/DELETE RLS policy at all — a sent invitation stayed
+    valid for the full 7-day window with no way to cut it off if leaked, which mattered more
+    once #2 above was found. Added a DELETE policy (owner/manager, unaccepted invitations only)
+    and a real "Revoke" button on `/dashboard/team` so the fix has an actual UI path, not just
+    a defense with no lever to pull.
+
+### Explicitly documented, not fixed (real, not swept under the rug)
+
+- **`audit_logs` exists (table + RLS) but nothing writes to it.** An earlier draft of
+  `docs/database.md` implied otherwise; corrected. Wiring up audit writes across every
+  sensitive call site (role changes, reversals, billing transitions, integration connects) is
+  real scope, not a one-line fix — the P0/P1 security gaps took priority this session. Flagged
+  as a genuine open item, not silently dropped.
+- **Two customer-search call sites build PostgREST `.or()` filter strings via raw
+  interpolation** (`app/dashboard/scanner/actions.ts`, `app/dashboard/customers/page.tsx`).
+  `business_id` is always a separately-ANDed `.eq()`, so this cannot cross a tenant boundary —
+  worst case is a crafted search term producing an unintended filter within the searcher's own
+  already-visible data. Left as documented, low-severity debt.
+- **WhatsApp campaign/automation sends require an approved Meta template literally named
+  `marketing_message`/`automation_message`** — there's no per-campaign template selection in
+  v1. Previously an undocumented assumption; now a documented external setup requirement (see
+  `docs/integrations.md` "WhatsApp").
+
+### Live test results
+
+- `npx tsc --noEmit`, `npm run lint`, `npm run build`: clean after every batch of changes, not
+  just at the end.
+- **29/29 live synthetic checks** against the linked Supabase project, using disposable test
+  businesses/users cleaned up immediately after each run (two separate scripts, deleted after
+  use — same discipline as every prior session's provider-webhook tests):
+  - Business-takeover attack (demote owner, then self-promote; direct delete of the owner's
+    row) — all three rejected, owner's row unchanged.
+  - Invitation acceptance by an unrelated authenticated user — rejected; the correctly-invited
+    email still succeeds; a revoked invitation no longer accepts.
+  - Two genuinely concurrent `reverse_transaction` calls for the same transaction — exactly one
+    succeeds, exactly one `REVERSAL` ledger row, balance decremented exactly once.
+  - Negative `points_reward_threshold`/`points_per_currency_unit` direct inserts — both
+    rejected by the database.
+  - A 350-point single-transaction earn at a 100-point threshold — 3 rewards granted, balance
+    lands at 50.
+  - An automation bonus crossing a stamp threshold — now generates a reward (previously none).
+  - OWNER can update business settings; MANAGER correctly cannot (RLS `USING`-clause rejection
+    verified by row count, not just absence of an error — a real gotcha hit while writing these
+    tests, since a non-matching `UPDATE ... WHERE` isn't a Postgres error).
+  - MANAGER can update branding; the change persists.
+  - An artificially-aged `SENDING` campaign recipient is correctly reclaimed by
+    `claim_queued_recipients` after the stale-job timeout, with `attempt_count` incremented.
+  - A stuck `QUEUED` automation run is correctly cleared and re-claimable after the timeout.
+- **Not exercised live this session** (unchanged external blockers, not new): real Stripe
+  checkout, real WhatsApp/SMS/Wallet sends, a real production URL, a physical phone's camera
+  against the scanner, browser/visual testing (no browser automation tool available in this
+  environment) — all require external accounts/deployment the user has deliberately deferred,
+  consistent with every prior session.
+
+### Known edge cases / simplifications (new this session)
+
+- Automation stuck-job reclaim and campaign stuck-job reclaim both accept a narrow,
+  documented double-send risk in exchange for guaranteed forward progress — see "Bugs found"
+  #11 above. This is a real trade-off, not a false guarantee.
+- The `business_members` owner-protection trigger blocks a MANAGER from demoting/removing the
+  owner, but does not stop an OWNER from demoting *themselves* (no self-harm guard) — no UI
+  exposes that action, and it's not attacker-reachable by a different account, so it wasn't
+  treated as in-scope for this revision.
+
+### External blockers
+
+Unchanged from Session 6 (Day 5) — Stripe/Meta/Twilio/Apple/Google Wallet accounts, Vercel
+deployment, physical device testing. Nothing found this session requires a new external
+dependency; every fix was code- or database-level, deployable with what's already available.
+
+### Database migrations created this session
+
+`0025_pre_deployment_revision` and `0026_stuck_job_recovery` — both applied to the linked
+remote project via `npx supabase db push`, confirmed via the live test results above.
+
+### What comes after this session
+
+Nothing code-side is blocking deployment. The remaining sequence is exactly what Session 6
+already documented in README.md "Deploying to production" — connect Vercel, set env vars
+(including the now-required `CRON_SECRET`), push the Supabase auth config with the real
+production URL, create real Stripe Products/Prices, and run the full customer/staff/billing
+flow against a real URL for the first time.

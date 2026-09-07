@@ -229,6 +229,47 @@ exactly what *was* verified live (billing webhook/RLS: 27/27 synthetic checks) v
 remains for the user to verify after deployment (README.md "Deploying to production" step 6
 is the exact checklist).
 
+## Session 7 — Final pre-deployment revision ✅ complete, verified live
+
+Not a feature day — a full read-through of the entire codebase (every migration, RPC, RLS
+policy, webhook, server action) looking specifically for bugs, security gaps, and
+misrepresented functionality, per "verify, don't trust prior Day reports." Full detail in
+`docs/database.md` "Session 7" and `docs/progress.md` Session 7.
+
+- [x] Fixed 3 P0 issues: `reverse_transaction` double-reversal race,
+      `accept_business_invitation` missing invitee-email check, `business_members`
+      demote-then-promote owner takeover
+- [x] Fixed 5 P1 issues: auth open redirect (3 sites), non-atomic/silently-failing onboarding,
+      cron routes failing open without `CRON_SECRET`, missing DB-level validation on
+      `loyalty_programs`, Settings/Rewards/Branding still being Day 1 placeholder stubs
+- [x] Fixed 5 P2 issues: reward generation not looping for multi-threshold crossings,
+      automation bonuses never generating rewards, stuck-job recovery for the campaign/
+      automation queues, signup account-enumeration inconsistency, misleading
+      idempotency-key comments in the messaging adapters
+- [x] Fixed 3 P3 issues: birthday automation was server-UTC-only (now per-business timezone),
+      a misleading code comment about VIP being event-driven, landing page overclaiming Apple/
+      Google Wallet as available today
+- [x] Built real Settings (business profile), Branding (logo/colors/button style — validated
+      strictly as hex, closing a latent email-HTML-injection path in the same change), and
+      Rewards (business-wide reward list with status filter) pages, replacing three
+      prominently-linked sidebar pages that were still empty stubs
+- [x] Added a revoke-invitation control (`/dashboard/team`) using the new
+      `business_invitations` DELETE policy, so the invite-email-binding fix has a real UI path
+      to actually cut off a leaked token, not just a defense with no lever
+- [x] Documented, not fixed (explicitly flagged, not swept under the rug — see "Known
+      simplifications" in `docs/database.md`): `audit_logs` exists but nothing writes to it;
+      two customer-search call sites build PostgREST filter strings without escaping (tenant-
+      bounded, low severity); WhatsApp campaign/automation sends require an approved template
+      literally named `marketing_message`/`automation_message`
+- [x] `npm run build`, `npm run lint`, `npx tsc --noEmit` all clean after every change
+- [x] 29/29 live synthetic checks against the linked Supabase project (disposable test
+      businesses, cleaned up after) covering every P0/P1/P2 database-level fix — see
+      `docs/progress.md` Session 7 for the exact list
+
+**Session 7 verdict**: CODE READY FOR DEPLOYMENT. See `docs/progress.md` Session 7 for the
+full pre-deployment report — external blockers (Stripe/Meta/Twilio/Apple/Google Wallet
+accounts, Vercel deployment, physical device testing) are unchanged from Day 5, not new.
+
 ## Priority order if behind schedule
 
 1. Authentication

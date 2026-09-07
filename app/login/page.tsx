@@ -1,4 +1,5 @@
 import { LoginForm } from "./login-form";
+import { safeRedirectPath } from "@/lib/safe-redirect";
 
 export default async function LoginPage({
   searchParams,
@@ -6,7 +7,7 @@ export default async function LoginPage({
   searchParams: Promise<{ redirect_to?: string }>;
 }) {
   const { redirect_to } = await searchParams;
-  const redirectTo = redirect_to?.startsWith("/") ? redirect_to : "/dashboard";
+  const redirectTo = safeRedirectPath(redirect_to);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-6 py-16">

@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 import { InviteStaffSchema } from "@/lib/validation/team";
 import { sendEmail } from "@/services/messaging/email";
+import { escapeHtml } from "@/services/messaging/email-template";
 import { getSiteUrl } from "@/lib/site-url";
 import { getEntitlements, usageLimitMessage } from "@/lib/entitlements";
 
@@ -75,11 +76,17 @@ export async function inviteStaffMember(_state: InviteStaffState, formData: Form
 
   const siteUrl = await getSiteUrl();
   const inviteUrl = `${siteUrl}/invite/${invitation.token}`;
+  // business.name is owner-controlled input, not attacker-controlled by the
+  // invitee — but it still reaches another person's inbox as raw HTML, so
+  // it's escaped the same way every other outbound email template already
+  // does (see services/messaging/email-template.ts), rather than being the
+  // one hand-rolled email in the codebase that skips it.
+  const safeBusinessName = escapeHtml(membership.business.name);
 
   const result = await sendEmail({
     to: email,
     subject: `You've been invited to join ${membership.business.name} on LoyalNest`,
-    html: `<p>You've been invited to join <strong>${membership.business.name}</strong> on LoyalNest as ${role === "MANAGER" ? "a manager" : "staff"}.</p><p><a href="${inviteUrl}">Accept invitation</a></p><p>This link expires in 7 days.</p>`,
+    html: `<p>You've been invited to join <strong>${safeBusinessName}</strong> on LoyalNest as ${role === "MANAGER" ? "a manager" : "staff"}.</p><p><a href="${inviteUrl}">Accept invitation</a></p><p>This link expires in 7 days.</p>`,
     text: `You've been invited to join ${membership.business.name} on LoyalNest as ${role === "MANAGER" ? "a manager" : "staff"}.\n\nAccept: ${inviteUrl}\n\nThis link expires in 7 days.`,
     fromName: "LoyalNest",
     idempotencyKey: `invite-${invitation.token}`,
@@ -91,4 +98,33 @@ export async function inviteStaffMember(_state: InviteStaffState, formData: Form
 
   revalidatePath("/dashboard/team");
   return { success: true, email };
+}
+
+export type RevokeInvitationState = { error?: string; success?: boolean } | undefined;
+
+/**
+ * Uses the business_invitations_delete_owner_or_manager RLS policy added
+ * this revision (migration 0025) — before it existed, a sent invitation
+ * token stayed valid for the full 7-day window with no way to cut it off.
+ */
+export async function revokeInvitation(_state: RevokeInvitationState, formData: FormData): Promise<RevokeInvitationState> {
+  const membership = await requireRole(["OWNER", "MANAGER"]);
+  const invitationId = formData.get("invitationId");
+  if (typeof invitationId !== "string" || !invitationId) {
+    return { error: "Invalid invitation." };
+  }
+
+  const supabase = await createClient();
+  const { error, count } = await supabase
+    .from("business_invitations")
+    .delete({ count: "exact" })
+    .eq("id", invitationId)
+    .eq("business_id", membership.business_id);
+
+  if (error || !count) {
+    return { error: "Could not revoke this invitation." };
+  }
+
+  revalidatePath("/dashboard/team");
+  return { success: true };
 }

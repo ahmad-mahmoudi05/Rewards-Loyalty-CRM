@@ -209,13 +209,21 @@ underneath it needs one more external step):
   Meta Business/Developer account with WhatsApp Embedded Signup configured exists in this
   environment, so this specific flow has **not** been exercised end-to-end, only built to spec
   from Meta's documented Embedded Signup shape.
+- **Template naming requirement, found during the Session 7 revision**: campaign sends
+  (`services/campaigns/process.ts`) and automation sends (`services/automations/shared.ts`)
+  use a fixed template name — `marketing_message` and `automation_message` respectively — not
+  whichever template a business actually synced/had approved (`fetchWhatsAppTemplates`).
+  Per-campaign template selection doesn't exist in v1. **A real WABA must have an approved
+  template named exactly `marketing_message` (for campaigns) and `automation_message` (for
+  automations)**, or those sends will fail with a template-not-found error from Meta. This is
+  now a documented setup requirement, not a silent assumption.
 - Exact external steps needed: (1) a Meta Business/Developer account with a WhatsApp Business
   Platform app, (2) Meta App Review approval for the `whatsapp_business_messaging` +
   `whatsapp_business_management` permissions, (3) Embedded Signup configured in the Meta App
   Dashboard (yields `NEXT_PUBLIC_META_APP_ID`/`NEXT_PUBLIC_META_CONFIG_ID`/`META_APP_SECRET`),
   (4) the webhook subscribed in the Meta App Dashboard pointing at
-  `<deployment>/api/webhooks/meta` with `META_WEBHOOK_VERIFY_TOKEN`, (5) at least one approved
-  message template per use case.
+  `<deployment>/api/webhooks/meta` with `META_WEBHOOK_VERIFY_TOKEN`, (5) two approved message
+  templates named exactly `marketing_message` and `automation_message` (see above).
 - Env vars: `META_GRAPH_API_VERSION`, `META_APP_ID`, `META_APP_SECRET`,
   `META_WEBHOOK_VERIFY_TOKEN`, `NEXT_PUBLIC_META_APP_ID`, `NEXT_PUBLIC_META_CONFIG_ID` (see
   `.env.example`); per-business `phoneNumberId`/`wabaId`/`accessToken` stored in
