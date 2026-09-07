@@ -100,6 +100,7 @@ export type Database = {
           id: string
           message_id: string | null
           status: string
+          trigger_entity_id: string | null
           triggered_at: string
         }
         Insert: {
@@ -111,6 +112,7 @@ export type Database = {
           id?: string
           message_id?: string | null
           status?: string
+          trigger_entity_id?: string | null
           triggered_at?: string
         }
         Update: {
@@ -122,6 +124,7 @@ export type Database = {
           id?: string
           message_id?: string | null
           status?: string
+          trigger_entity_id?: string | null
           triggered_at?: string
         }
         Relationships: [
@@ -315,6 +318,57 @@ export type Database = {
           },
         ]
       }
+      business_invitations: {
+        Row: {
+          accepted_at: string | null
+          business_id: string
+          created_at: string
+          email: string
+          expires_at: string
+          id: string
+          invited_by: string
+          role: string
+          token: string
+        }
+        Insert: {
+          accepted_at?: string | null
+          business_id: string
+          created_at?: string
+          email: string
+          expires_at?: string
+          id?: string
+          invited_by: string
+          role: string
+          token?: string
+        }
+        Update: {
+          accepted_at?: string | null
+          business_id?: string
+          created_at?: string
+          email?: string
+          expires_at?: string
+          id?: string
+          invited_by?: string
+          role?: string
+          token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "business_invitations_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "business_invitations_invited_by_fkey"
+            columns: ["invited_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       business_members: {
         Row: {
           business_id: string
@@ -419,6 +473,7 @@ export type Database = {
       }
       campaign_recipients: {
         Row: {
+          attempt_count: number
           business_id: string
           campaign_id: string
           channel_address: string
@@ -429,12 +484,14 @@ export type Database = {
           failed_at: string | null
           failure_reason: string | null
           id: string
+          next_attempt_at: string | null
           provider_message_id: string | null
           read_at: string | null
           sent_at: string | null
           status: string
         }
         Insert: {
+          attempt_count?: number
           business_id: string
           campaign_id: string
           channel_address: string
@@ -445,12 +502,14 @@ export type Database = {
           failed_at?: string | null
           failure_reason?: string | null
           id?: string
+          next_attempt_at?: string | null
           provider_message_id?: string | null
           read_at?: string | null
           sent_at?: string | null
           status?: string
         }
         Update: {
+          attempt_count?: number
           business_id?: string
           campaign_id?: string
           channel_address?: string
@@ -461,6 +520,7 @@ export type Database = {
           failed_at?: string | null
           failure_reason?: string | null
           id?: string
+          next_attempt_at?: string | null
           provider_message_id?: string | null
           read_at?: string | null
           sent_at?: string | null
@@ -509,6 +569,10 @@ export type Database = {
           message_body: string | null
           message_template_id: string | null
           name: string
+          offer_description: string | null
+          offer_expiry_days: number | null
+          offer_type: string | null
+          offer_value: number | null
           scheduled_at: string | null
           started_at: string | null
           status: string
@@ -524,6 +588,10 @@ export type Database = {
           message_body?: string | null
           message_template_id?: string | null
           name: string
+          offer_description?: string | null
+          offer_expiry_days?: number | null
+          offer_type?: string | null
+          offer_value?: number | null
           scheduled_at?: string | null
           started_at?: string | null
           status?: string
@@ -539,6 +607,10 @@ export type Database = {
           message_body?: string | null
           message_template_id?: string | null
           name?: string
+          offer_description?: string | null
+          offer_expiry_days?: number | null
+          offer_type?: string | null
+          offer_value?: number | null
           scheduled_at?: string | null
           started_at?: string | null
           status?: string
@@ -753,6 +825,7 @@ export type Database = {
           phone_normalized: string
           phone_raw: string
           source: string
+          unsubscribe_token: string
           updated_at: string
           wallet_token: string
         }
@@ -769,6 +842,7 @@ export type Database = {
           phone_normalized: string
           phone_raw: string
           source?: string
+          unsubscribe_token?: string
           updated_at?: string
           wallet_token?: string
         }
@@ -785,6 +859,7 @@ export type Database = {
           phone_normalized?: string
           phone_raw?: string
           source?: string
+          unsubscribe_token?: string
           updated_at?: string
           wallet_token?: string
         }
@@ -1734,6 +1809,7 @@ export type Database = {
           stamps_count: number | null
           total_spend: number | null
           transaction_count: number | null
+          unsubscribe_token: string | null
           updated_at: string | null
           wallet_token: string | null
           whatsapp_subscribed: boolean | null
@@ -1757,6 +1833,53 @@ export type Database = {
       }
     }
     Functions: {
+      accept_business_invitation: { Args: { p_token: string }; Returns: Json }
+      claim_queued_recipients: {
+        Args: { p_limit?: number }
+        Returns: {
+          attempt_count: number
+          business_id: string
+          campaign_id: string
+          channel_address: string
+          clicked_at: string | null
+          created_at: string
+          customer_id: string
+          delivered_at: string | null
+          failed_at: string | null
+          failure_reason: string | null
+          id: string
+          next_attempt_at: string | null
+          provider_message_id: string | null
+          read_at: string | null
+          sent_at: string | null
+          status: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "campaign_recipients"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
+      ensure_system_tag: {
+        Args: { p_business_id: string; p_color?: string; p_name: string }
+        Returns: string
+      }
+      finalize_campaign_if_complete: {
+        Args: { p_campaign_id: string }
+        Returns: undefined
+      }
+      grant_automation_bonus: {
+        Args: {
+          p_business_id: string
+          p_customer_id: string
+          p_description?: string
+          p_loyalty_program_id: string
+          p_points_delta?: number
+          p_stamps_delta?: number
+        }
+        Returns: Json
+      }
       record_transaction: {
         Args: {
           p_business_id: string
@@ -1767,6 +1890,14 @@ export type Database = {
           p_loyalty_program_id: string
           p_subtotal?: number
           p_total: number
+        }
+        Returns: Json
+      }
+      redeem_customer_offer: {
+        Args: {
+          p_business_id: string
+          p_location_id?: string
+          p_offer_id: string
         }
         Returns: Json
       }
@@ -1789,6 +1920,14 @@ export type Database = {
       }
       rotate_customer_wallet_token: {
         Args: { p_business_id: string; p_customer_id: string }
+        Returns: Json
+      }
+      snapshot_campaign_recipients: {
+        Args: {
+          p_business_id: string
+          p_campaign_id: string
+          p_customer_ids: string[]
+        }
         Returns: Json
       }
     }

@@ -76,6 +76,32 @@ export async function redeemReward(
   return { success: true };
 }
 
+export type RedeemOfferState = { error?: string; success?: boolean } | undefined;
+
+export async function redeemOffer(customerId: string, _state: RedeemOfferState, formData: FormData): Promise<RedeemOfferState> {
+  const membership = await requireBusinessContext();
+
+  const offerId = formData.get("offerId");
+  const locationId = formData.get("locationId");
+  if (typeof offerId !== "string") {
+    return { error: "Invalid offer." };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("redeem_customer_offer", {
+    p_business_id: membership.business_id,
+    p_offer_id: offerId,
+    p_location_id: typeof locationId === "string" && locationId ? locationId : undefined,
+  });
+
+  if (error) {
+    return { error: error.message || "This offer has already been redeemed." };
+  }
+
+  revalidatePath(`/dashboard/customers/${customerId}`);
+  return { success: true };
+}
+
 export type ReverseTransactionState = { error?: string; success?: boolean } | undefined;
 
 export async function reverseTransactionAction(

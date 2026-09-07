@@ -145,6 +145,95 @@ unwinding a reward that might already be redeemed is a materially bigger problem
   `last_pushed_at`); nothing writes to it yet since signing isn't implemented (see
   `docs/integrations.md`).
 
+## Day 4 additions
+
+- `0015_campaign_status_expansion.sql` — full campaign/recipient lifecycle status sets (adds
+  `SCHEDULED`/`PARTIALLY_FAILED` to campaigns; `PENDING`/`SKIPPED_NO_CONSENT`/
+  `SKIPPED_INVALID_ADDRESS`/`UNSUBSCRIBED`/`CANCELLED` to recipients), plus
+  `unique(campaign_id, customer_id)` and `attempt_count`/`next_attempt_at` for retry/backoff
+  bookkeeping.
+- `0016_customer_unsubscribe_token.sql` — `customers.unsubscribe_token`, deliberately
+  separate from Day 3's `wallet_token` (different purpose, different exposure surface).
+- `0017_business_invitations.sql` — replaces Day 3's MVP staff-invite (create account +
+  show a password once) with a real invite-then-accept flow. `business_id`/`role` are fixed
+  on the invitation row and never re-supplied by the client at acceptance — see
+  `accept_business_invitation` below.
+- `0018_campaign_engine_functions.sql` — the campaign engine's trusted surface:
+  `snapshot_campaign_recipients` (defensively re-validates every candidate customer id
+  against `p_business_id` — a forged/cross-tenant id is silently excluded, not an error — and
+  is called with a candidate list computed via the caller's own RLS-scoped session, never a
+  service-role bypass), `claim_queued_recipients` (atomic `FOR UPDATE SKIP LOCKED` claim,
+  restricted to `service_role` since it operates across every business's due work and has no
+  per-caller auth check of its own), `finalize_campaign_if_complete`, `accept_business_invitation`,
+  `redeem_customer_offer`.
+- `0019_campaign_offers.sql` — optional offer fields on `campaigns` (`offer_type`,
+  `offer_value`, `offer_expiry_days`, `offer_description`); `snapshot_campaign_recipients`
+  creates one real `customer_offers` row per eligible recipient at snapshot time.
+- `0020_retention_automations.sql` — narrows `automations.trigger_type` to exactly five
+  values (`INACTIVE_WINBACK`, `BIRTHDAY_REWARD`, `REWARD_READY_REMINDER`, `VIP_UPGRADE`,
+  `LOYALTY_EXPIRY_REMINDER`), replacing Day 1's looser placeholder set (never used by any app
+  code, so a clean swap). Adds `automation_runs.trigger_entity_id`. Adds
+  `grant_automation_bonus` (the only way an automation may add loyalty value — restricted to
+  `service_role`, since automations run as a trusted background job with no authenticated
+  staff session to check `business_members` against) and `ensure_system_tag` (idempotent
+  get-or-create for the `AT_RISK`/`VIP` system tags, reusing Day 1's `tags`/`customer_tags`
+  rather than a new status column).
+- `0021_customer_summary_unsubscribe_token.sql` — `customer_summary` (Day 2) predates
+  `unsubscribe_token` (this session); added as a trailing column via `CREATE OR REPLACE VIEW`.
+
+### Campaign engine design notes
+
+- **Recipient snapshot is real and frozen**: `campaign_recipients` rows are created once, at
+  send time, from the segment match at that instant — the segment is never recomputed mid-send.
+  Consent is checked twice: once to decide who gets snapshotted, and again by the worker
+  immediately before each dispatch (a revocation between snapshot and send produces
+  `SKIPPED_NO_CONSENT` on that one row, not a failure of the whole campaign).
+- **Retry/backoff**: `attempt_count` + `next_attempt_at`, capped at 5 attempts with
+  `2^attempt` minutes backoff (capped at 60 min) — see `services/campaigns/process.ts`.
+  Permanent vs transient is decided per-provider (Resend's `error.name`, Meta's HTTP status,
+  Twilio's `status`) — verified live: a Resend `validation_error` (invalid recipient) was
+  correctly classified permanent and never retried.
+- **Idempotency**: `campaign_recipients.id` (or `automation_runs.id`) is passed as the
+  provider's own idempotency key on every send call (Resend's `idempotencyKey` option,
+  Twilio's `statusCallback`-linked message SID) — a worker retry of the same row can never
+  cause two provider sends for the intended recipient. Verified live: two concurrent
+  `claim_queued_recipients` calls against the same batch never both claimed the same row
+  (`attempt_count` stayed exactly 1 per recipient across the whole run).
+- **Background processing**: chosen path is Next.js's `after()` (fires the first processing
+  pass immediately when a campaign is sent, without making the owner wait — see Part 35's
+  "return to UI immediately") plus a `/api/campaigns/process` route meant to be hit by a
+  platform cron (e.g. Vercel Cron, not yet configured in `vercel.json`) as the durability
+  safety net for scheduled campaigns and anything left over from an interrupted run. This was
+  chosen over Inngest/Trigger.dev/pgmq specifically because it needs zero new external
+  service or account — consistent with the reasoning already in `docs/architecture.md`'s
+  original queue-design note from Day 1.
+
+### Retention automations: what's real vs. documented-limited
+
+- Four of five automation types are fully functional and verified live end-to-end:
+  `INACTIVE_WINBACK` (tag + bonus + message, dedup by last-visit-date "cycle", `AT_RISK` tag
+  cleared on return), `BIRTHDAY_REWARD` (dedup by year), `REWARD_READY_REMINDER` (dedup by
+  `<reward_id>:initial`/`:followup`, re-checks the reward is still `AVAILABLE` immediately
+  before sending), `VIP_UPGRADE` (dedup by a constant key — fires at most once ever per
+  customer per automation, since "trigger on threshold crossing" doesn't need to re-fire on
+  every later transaction).
+- **`LOYALTY_EXPIRY_REMINDER` is a documented permanent no-op**: the spec's own instructions
+  allow this ("Only active if business loyalty program uses expiry"), and the loyalty engine
+  (Day 2's `loyalty_programs`/`loyalty_accounts`) has no points/stamps expiration concept at
+  all — no expiry date is ever set on a balance. Retrofitting real expiry into the core
+  loyalty engine is materially bigger than a same-day automation addition should attempt
+  unilaterally. The config UI exists (an owner can enable it), but `evaluateLoyaltyExpiryReminder()`
+  always returns zero matches. Revisit by extending `loyalty_accounts` with an expiry concept
+  if a real business asks for it.
+- **Automation-granted bonus points/stamps use the exact same ledger as staff-recorded
+  transactions** (`loyalty_transactions` with `transaction_type = 'BONUS'`) — verified live:
+  an inactive-winback bonus showed up in the customer's ledger with a human-readable
+  description, auditable the same way any other loyalty change is.
+- **Bonus/tag application happens even when the message is skipped for no consent** — a
+  deliberate design choice, not an oversight: consent gates being *contacted*, not whether a
+  customer *receives* loyalty value they'll see next time they check their own card
+  regardless of marketing opt-in status.
+
 ## Gotcha found during testing: INSERT ... RETURNING re-checks the SELECT policy
 
 Postgres applies a table's SELECT-policy `USING` clause to the row returned by

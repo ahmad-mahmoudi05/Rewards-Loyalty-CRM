@@ -11,7 +11,7 @@ export function InviteStaffForm() {
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-foreground/10 p-4">
-      <h2 className="text-sm font-medium">Add a team member</h2>
+      <h2 className="text-sm font-medium">Invite a team member</h2>
       <form action={formAction} className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1.5">
           <label htmlFor="fullName" className="text-xs font-medium text-foreground/70">
@@ -39,23 +39,15 @@ export function InviteStaffForm() {
           type="submit"
           className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
         >
-          {pending ? "Adding…" : "Add"}
+          {pending ? "Sending…" : "Send invite"}
         </button>
       </form>
 
       {state?.error && <p className="text-sm text-red-600">{state.error}</p>}
       {state?.success && (
-        <div className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-900">
-          {state.tempPassword ? (
-            <>
-              Account created for {state.email}. Temporary password (share this with them once —
-              it won&apos;t be shown again):{" "}
-              <code className="rounded bg-white px-1.5 py-0.5">{state.tempPassword}</code>
-            </>
-          ) : (
-            <>Added {state.email} to the team.</>
-          )}
-        </div>
+        <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-900">
+          Invitation sent to {state.email}. It expires in 7 days.
+        </p>
       )}
     </div>
   );

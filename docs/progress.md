@@ -431,3 +431,192 @@ all applied to the remote linked project, types regenerated.
 - Wallet payload mappers (`services/wallet/*`) are ready to receive real signing
   implementations the moment certificates/service account exist — no redesign needed, just
   fill in the gated function bodies.
+
+## 2026-09-07 — Session 4 (Day 4 — marketing campaigns, real email, retention automations)
+
+### Completed
+
+- Re-read every doc and the exact current schema/RLS/service code before writing anything.
+  Reused Day 1's `campaigns`/`campaign_recipients`/`message_templates`/`business_integrations`/
+  `automations`/`automation_runs` tables rather than inventing parallel structures — extended
+  their status models and added exactly the columns/tables genuinely missing (unsubscribe
+  token, invitation flow, campaign offer fields, automation trigger-entity tracking).
+- **User provided a real Resend API key mid-session** (explicitly chose "get a real key" over
+  "build it gated like Wallet" when asked, since the spec wanted Email fully real and
+  tested). This changed the ceiling for today's work — Email ended up genuinely,
+  verifiably real, not just architecture.
+- **Migrations 0015–0021** (all pushed, types regenerated) — see `docs/database.md` "Day 4
+  additions" for full detail on each. Highlights: `snapshot_campaign_recipients` (defensively
+  re-validates tenancy per candidate id — the actual cross-tenant defense, verified live),
+  `claim_queued_recipients` (atomic `FOR UPDATE SKIP LOCKED`, `service_role`-only),
+  `grant_automation_bonus` (the only way an automation can add loyalty value, ledger-audited),
+  `business_invitations` + `accept_business_invitation` (business_id/role fixed server-side —
+  real fix for a gap in Day 3's MVP invite flow).
+- **Messaging layer** (`services/messaging/`): one provider-agnostic result shape across
+  `email.ts` (real Resend calls), `whatsapp.ts` (real Meta Cloud API shape, gated — no
+  credentials), `sms.ts` (real Twilio SDK usage, gated — no credentials), plus
+  `render-template.ts` (whitelisted `{{variable}}` substitution, never arbitrary code eval)
+  and `email-template.ts` (business-branded HTML wrapper).
+- **Campaign engine**: `/dashboard/campaigns` (list + empty state), `/new` (single-page
+  builder: audience/channel/message/schedule), `/[id]` (draft = live audience preview + send
+  + test-send; sent = real recipient-status counts + a clearly-labeled attribution section).
+  `services/campaigns/segments.ts` computes 15 named segments by reusing the exact
+  `customer_summary`-based query patterns Day 2's CRM filters already use.
+  `services/campaigns/process.ts` is the queue worker; `/api/campaigns/process` is its
+  cron-facing route.
+- **Retention automations** (superseding this session's own earlier, looser automation plan
+  the moment the user sent the detailed 5-type spec mid-turn): `services/automations/shared.ts`
+  (atomic claim-then-run dedup via the `automation_runs` unique constraint — insert-first,
+  never check-then-insert) + `evaluate.ts` (one function per type) + `/api/automations/run`
+  (cron-facing evaluator) + `/dashboard/automations` (5 cards) + `/dashboard/automations/[type]`
+  (config form with a live message preview).
+- **Real webhook handling**: `/api/webhooks/resend` verifies Resend's Svix-format signature,
+  maps events to recipient status, and treats bounce/complaint as consent revocation (reusing
+  `customer_consents` rather than a new suppression table).
+- **Real unsubscribe**: `/unsubscribe/[token]`, keyed off the new `customers.unsubscribe_token`.
+- **Real staff invitation**: replaced Day 3's "create account, show password once" MVP with
+  a genuine invite-email-then-accept flow, including a path for a brand-new person (no prior
+  account) to set their own password directly from the invite link.
+- `npx tsc --noEmit`, `npm run lint`, `npm run build` all pass clean.
+
+### Bugs found and fixed this session
+
+1. **Real bug**: `svix`'s top-level `Webhook.verify()` only verifies the signature and
+   returns `undefined` — it does not parse/return the JSON payload (that behavior belongs to
+   the inner `standardwebhooks` library with `jsonParse: true`, which `svix`'s wrapper
+   explicitly sets to `false`). Caused a 500 (`Cannot read properties of undefined`) on the
+   very first webhook test. Fixed by `JSON.parse(rawBody)` immediately after a successful
+   `verify()`. Documented in `docs/integrations.md` since it's a genuine library-API gotcha,
+   not an obvious mistake.
+2. **Real, minor bug**: the automation evaluators counted every non-sent outcome as
+   "skipped" in their summary stats, even genuine provider failures (which were correctly
+   persisted as `automation_runs.status = 'FAILED'` in the database the whole time — only the
+   in-memory summary counter was wrong). Fixed by threading the skip/fail `reason` through
+   `sendAutomationMessage`'s return value.
+3. **Test-script bug, twice more** (same recurring class of mistake from Days 1–3): an
+   unscoped `button[type="submit"]` selector in two different test scripts hit the sidebar's
+   logout button instead of the intended form (the loyalty page, then the campaign-creation
+   page). Both times this was caught immediately from the server log (`logout()` fired
+   instead of the intended action) rather than misdiagnosed as an app bug. Fixed by scoping
+   to `main button[type="submit"]`, consistent with the fix already documented in Session 2.
+4. **Test-setup mistake, not a bug**: assumed a customer already had a transaction to
+   backdate for the inactive-automation test; they didn't (0 existing transactions), so the
+   backdate `UPDATE` silently affected 0 rows and the automation correctly did not fire on
+   stale test assumptions. Fixed by recording a real transaction via `record_transaction`
+   first, then backdating that real row. Worth noting as a reminder that a "found 0 matches"
+   result is exactly as important to verify as a "found matches" one — it turned out to be
+   the test setup at fault, not the app, but only checking confirmed that.
+5. **Real, externally-caused behavior, not a bug**: Resend's API rejects (403) any `to`
+   address other than the account's own signup email when no sending domain is verified.
+   Discovered live, not assumed — see `docs/integrations.md` for the exact error text and
+   what it means for production readiness.
+
+### Live acceptance tests performed (all against the linked Supabase project, real data, cleaned up after)
+
+- **Email campaign, full lifecycle**: Brew Café, 3 customers (Ahmad — real email + EMAIL
+  consent; Sarah — fake email + EMAIL consent; Omar — no consent). Campaign to "All
+  customers" via Email: audience preview correctly showed Matched 3 / Eligible 2 (Omar
+  excluded pre-send, never even snapshotted). After send: Ahmad `SENT` with a real Resend
+  message id and a real `message_events` row; Sarah `FAILED` with Resend's real sandbox error
+  text, `attempt_count: 1` (correctly not retried, since the error was classified permanent).
+  Campaign status correctly rolled up to `PARTIALLY_FAILED` — never falsely `COMPLETED`.
+- **Webhook signature/idempotency**: a correctly-signed synthetic `email.delivered` event
+  updated the real recipient to `DELIVERED` with a timestamp; the identical event replayed
+  was detected as a duplicate via the unique index and not reprocessed (exactly 2
+  `message_events` rows total, not 3, despite 2 POSTs); a signature-tampered request was
+  rejected with 401 before touching any table.
+- **Unsubscribe**: Ahmad's real unsubscribe link correctly revoked EMAIL consent
+  (`source: 'UNSUBSCRIBE_LINK'`); a second campaign afterward correctly showed only 1
+  consented customer (Sarah), confirming Ahmad's exclusion; an invalid/nonexistent token
+  correctly 404s.
+- **Cross-tenant campaign security**: as the Brew Café owner, (1) injected a real Smash Padel
+  customer id into the audience list passed to `snapshot_campaign_recipients` — the function
+  silently excluded it (only Brew's own consented customer became a recipient; the foreign id
+  never appeared in `campaign_recipients`); (2) attempted to read Smash Padel's `campaigns`
+  table directly — 0 rows (RLS); (3) called the same RPC with Smash Padel's `business_id`
+  directly — rejected with "You do not have access to this business."
+- **Retention automations, all 4 functional types, live data**: `INACTIVE_WINBACK` fired
+  exactly once for a customer with a genuinely backdated (31-day-old) transaction — applied
+  the `AT_RISK` tag, recorded a real `BONUS` loyalty-ledger entry (`+50 points`, visible with
+  a human-readable description), and correctly *skipped* the message because that same
+  customer had previously unsubscribed from email (consent gates contact, not the loyalty
+  value itself — verified both halves independently). A second scheduler run produced zero
+  additional `automation_runs` for the same cycle. The customer then made a new purchase and
+  a further run correctly cleared their `AT_RISK` tag. `BIRTHDAY_REWARD` (customer with
+  birthday tomorrow, 1-day lead time), `REWARD_READY_REMINDER` (customer with a fresh
+  `AVAILABLE` reward, 0-day delay), and `VIP_UPGRADE` (customer crossing an AED 2000
+  spend threshold) each fired exactly once on the first run and produced zero additional
+  runs on a second, back-to-back run — full dedup verified for every functional type, not
+  just one.
+- **Staff invitation, full real-email lifecycle**: owner invited a brand-new email address as
+  STAFF; a real invitation email was sent via Resend; the invite link correctly showed "Join
+  Brew Café"; a person with no prior LoyalNest account set their own password directly from
+  the link and landed on the dashboard as a `STAFF` member of the correct business; the
+  invitation was marked accepted; **revisiting the same link a second time correctly showed
+  "already been used"** rather than allowing reuse.
+- **Staff permissions, Day 4 surfaces**: a STAFF session was redirected server-side (not just
+  missing a nav link) away from `/dashboard/campaigns`, `/dashboard/campaigns/new`,
+  `/dashboard/automations`, and `/dashboard/automations/VIP_UPGRADE` on direct URL access.
+- **Queue concurrency**: two simultaneous `GET /api/campaigns/process` calls against a shared
+  batch of queued recipients resulted in every recipient having `attempt_count` of exactly 1
+  — no recipient was claimed or processed by both calls, confirming the `FOR UPDATE SKIP
+  LOCKED` claim is genuinely atomic under concurrency, not just correct in single-threaded
+  testing.
+
+### Known edge cases / simplifications (see docs/database.md and docs/integrations.md for full detail)
+
+- Campaign builder is a single page, not a multi-step wizard with per-step draft persistence
+  — the campaign row itself is the "draft" (created as `DRAFT` status, editable until sent),
+  which satisfies the spirit of draft persistence without the added UI complexity of a
+  literal multi-route wizard. Documented scope reduction, not an oversight.
+- `LOYALTY_EXPIRY_REMINDER` cannot fire — no points/stamps expiry concept exists in the
+  loyalty engine (Day 2). Config UI exists; evaluator is a documented permanent no-op.
+- WhatsApp/SMS: adapters are real, correct code; nothing has been sent for real (no
+  credentials). Meta Embedded Signup, WhatsApp template sync, incoming-message/opt-out
+  handling, and the Twilio status-callback route were not built this session — see
+  `docs/integrations.md` "Known gaps."
+- Attribution is a simple, explicitly-labeled 14-day temporal-association window (a customer
+  transacted within 14 days of receiving a message) — not a claim of causation, and not the
+  richer offer-redemption-based direct attribution the original spec sketched as a stretch
+  goal.
+- Automation bonus/tag effects apply even when the message itself is skipped for missing
+  consent — a deliberate interpretation (see `docs/database.md`), not an oversight.
+
+### External blockers
+
+- **Email production readiness**: needs a verified sending domain at resend.com/domains (the
+  current sandbox can only deliver to the Resend account's own email) and a real
+  `RESEND_WEBHOOK_SECRET` from a registered webhook endpoint in the Resend dashboard (today's
+  value is a locally-generated test secret, used only to verify our own signature-checking
+  code).
+- **WhatsApp**: Meta App Review + Embedded Signup, per business. See `docs/integrations.md`
+  for exact permissions needed.
+- **SMS**: Twilio account + UAE Sender ID/regulatory bundle registration, per business.
+- None of the above blocked any other Day 4 work — every gated path was built to the point of
+  "code complete, clearly marked, gracefully degrades," per the standing project rule.
+
+### Environment variables
+
+Added to `.env.local` (real, working): `RESEND_API_KEY`. Added (test-only value, needs a real
+one before production): `RESEND_WEBHOOK_SECRET`. `.env.example` already had every Day 4 name
+from earlier sessions' forward-looking entries; no new names needed there.
+
+### Database migrations created this session
+
+`0015_campaign_status_expansion`, `0016_customer_unsubscribe_token`,
+`0017_business_invitations`, `0018_campaign_engine_functions`, `0019_campaign_offers`,
+`0020_retention_automations`, `0021_customer_summary_unsubscribe_token` — all applied to the
+remote linked project, types regenerated.
+
+### What Day 5 can safely build on
+
+- The messaging layer (`services/messaging/`) and its provider-agnostic result shape is ready
+  for Stripe's webhook handling to follow the same signature-verification/idempotency
+  pattern already proven for Resend.
+- `plans`/`subscriptions` (Day 1 schema) are still exactly where Day 5's Stripe integration
+  belongs — nothing from Day 4 changes that plan.
+- The campaign/automation analytics pages are real query patterns Day 5's broader analytics
+  dashboard can extend rather than replace.
+- `vercel.json` cron configuration for `/api/campaigns/process` and `/api/automations/run` is
+  still needed before production — both routes exist and work when hit manually/via `after()`,
+  but nothing schedules the safety-net tick yet outside of local testing.

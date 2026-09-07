@@ -2,7 +2,25 @@
 
 import { RecordTransactionForm } from "@/app/dashboard/customers/[customerId]/record-transaction-form";
 import { RedeemRewardButton } from "@/app/dashboard/customers/[customerId]/redeem-reward-button";
+import { RedeemOfferButton } from "@/app/dashboard/customers/[customerId]/redeem-offer-button";
 import type { OperationalView } from "@/app/dashboard/scanner/actions";
+
+function describeOffer(offerType: string, value: number | null) {
+  switch (offerType) {
+    case "PERCENT_DISCOUNT":
+      return `${value}% off`;
+    case "FIXED_DISCOUNT":
+      return `${value} off`;
+    case "FREE_ITEM":
+      return "Free item";
+    case "BONUS_POINTS":
+      return `${value} bonus points`;
+    case "BONUS_STAMP":
+      return "Bonus stamp";
+    default:
+      return "Special offer";
+  }
+}
 
 export function CustomerOperationalPanel({
   view,
@@ -17,7 +35,7 @@ export function CustomerOperationalPanel({
   onRefresh: () => void;
   onDone: () => void;
 }) {
-  const { customer, rewards } = view;
+  const { customer, rewards, offers } = view;
   const last4 = customer.phone_normalized?.slice(-4) ?? "----";
 
   const progressLabel =
@@ -69,6 +87,29 @@ export function CustomerOperationalPanel({
                 customerName={customer.first_name ?? undefined}
                 rewardId={r.id}
                 rewardName={r.name}
+                locationId={locationId}
+                onRedeemed={onRefresh}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {offers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-foreground/50">🏷️ Active offers</p>
+          {offers.map((o) => (
+            <div key={o.id} className="flex items-center justify-between rounded-lg bg-blue-50 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-blue-900">{describeOffer(o.offer_type, o.value)}</p>
+                {o.expires_at && (
+                  <p className="text-xs text-blue-700">Expires {new Date(o.expires_at).toLocaleDateString()}</p>
+                )}
+              </div>
+              <RedeemOfferButton
+                customerId={customer.id!}
+                offerId={o.id}
+                offerLabel={describeOffer(o.offer_type, o.value)}
                 locationId={locationId}
                 onRedeemed={onRefresh}
               />

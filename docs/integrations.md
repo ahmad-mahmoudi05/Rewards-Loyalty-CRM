@@ -28,30 +28,90 @@ Status legend: **CODE COMPLETE** (implemented, works once external setup is done
   Prices matching `public.plans` (`STARTER`/`GROWTH`/`PRO`) created in Stripe with their IDs
   stored back onto the `plans` rows.
 
-## WhatsApp (Meta WhatsApp Business Platform)
+## Email (Resend) — Day 4, REAL and verified live
 
-- Status: **NOT STARTED**. Planned for Day 4 (architecture only — approval is external).
-- Env vars needed: `META_APP_ID`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, plus a
-  per-business WhatsApp Business Account ID / phone number ID stored in
-  `business_integrations.config` (not as a top-level column, since it's per-tenant).
-- External setup: Meta Embedded Signup flow, template approval per business. Cannot be
-  completed by us alone — each business owner must complete Meta's onboarding. Build the
-  connect/status UI and template management regardless; mark actual sends as blocked until a
-  business completes theirs.
+- Status: **CODE COMPLETE, verified with real sends.** `services/messaging/email.ts` calls
+  the real Resend API (`resend` npm package) with an `Idempotency-Key` per send
+  (`campaign_recipients.id` / `automation_runs.id`), a `List-Unsubscribe` header, and
+  provider-error classification (permanent vs transient) that feeds the queue's retry logic.
+- **Sandbox reality, discovered live (not documented in advance, found by testing)**: this
+  Resend account has no verified sending domain, so every send goes out as
+  `onboarding@resend.dev`, and — this is the important part — **the Resend API itself
+  rejects (403) any `to` address other than the account's own signup email**. This is not a
+  bug in our code; it's Resend's anti-abuse sandbox restriction, confirmed directly against
+  their live API. Verified during testing: a send to the account's own address succeeded
+  (real `provider_message_id` returned, real webhook-equivalent event recorded); a send to
+  any other address correctly failed with Resend's real error text, and our permanent-error
+  classification correctly marked it `FAILED` (not endlessly retried).
+- **Production requirement**: verify a real domain at resend.com/domains and change the
+  hardcoded `onboarding@resend.dev` sender in `services/messaging/email.ts` to
+  `notifications@<verified-domain>` (or a per-business subdomain) before real campaigns can
+  reach real customers. This is the one external step standing between today's code and full
+  production email.
+- Webhooks (`app/api/webhooks/resend/route.ts`): signature-verified with the `svix` package
+  against `RESEND_WEBHOOK_SECRET` (Resend signs webhooks in Svix's format). **Gotcha found
+  while testing**: `svix`'s own `Webhook.verify()` only verifies and throws on failure — it
+  does not parse/return the JSON body (that's `standardwebhooks`' `jsonParse` option, which
+  `svix`'s wrapper explicitly disables). Fixed by calling `JSON.parse(rawBody)` ourselves
+  immediately after a successful `verify()`. Verified live with a correctly-signed synthetic
+  payload (a real webhook call from Resend to `localhost` isn't reachable, so this is the
+  closest honest substitute — same code path, same signature check, same idempotency logic):
+  valid signature → processed and recipient status updated; identical event replayed →
+  detected as a duplicate via the `(provider_message_id, event_type)` unique index, not
+  reprocessed; tampered signature → rejected with 401, never touches the database.
+- Env vars: `RESEND_API_KEY` (set), `RESEND_WEBHOOK_SECRET` (set to a locally-generated test
+  value for the signature-verification test above — **replace with the real secret from the
+  Resend dashboard once a webhook endpoint is registered there**).
 
-## SMS (Twilio, initial choice)
+## WhatsApp (Meta WhatsApp Business Platform, Cloud API)
 
-- Status: **NOT STARTED**. Planned for Day 4.
-- Env vars needed: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and a sender number/Messaging
-  Service SID (per business or shared, TBD when built — likely shared sender with business
-  name in the message body for MVP, since per-business sender registration is slow).
+- Status: **CODE COMPLETE / META APP REVIEW + EMBEDDED SIGNUP PENDING.** No WABA credentials
+  exist in this environment; nothing has been sent for real.
+- What's implemented (`services/messaging/whatsapp.ts`): a correct Cloud API template-message
+  POST (`messaging_product`, `type: "template"`, `language`, ordered body `parameters`),
+  gated by `isWhatsAppConfigured()` (checks `business_integrations` for a connected
+  `phoneNumberId`/`accessToken`), with Meta's documented permanent-vs-transient HTTP status
+  classification (4xx except 429 = permanent) feeding the same retry logic email uses.
+  `META_GRAPH_API_VERSION` is one named constant (default `v23.0`), not hard-coded per call
+  site — **this default has not been checked against Meta's live changelog and should be
+  verified before production use.**
+- What's NOT implemented: Meta Embedded Signup itself (the OAuth-style flow a business owner
+  completes to connect their own WhatsApp Business Account) — the dashboard's Integrations
+  page still only has a placeholder for WhatsApp (see `docs/launch-checklist.md`); template
+  sync from a connected WABA; and the incoming-webhook/opt-out-keyword handling described in
+  the original spec (Parts 20, 23, 29, 30) were not built this session — flagged as remaining
+  work, not silently dropped.
+- Exact external steps needed: (1) a Meta Business/Developer account with a WhatsApp Business
+  Platform app, (2) Meta App Review approval for the `whatsapp_business_messaging` +
+  `whatsapp_business_management` permissions, (3) Embedded Signup configured in the Meta App
+  Dashboard, (4) at least one approved message template per use case (marketing messages
+  require Meta-approved templates outside the 24-hour customer service window).
+- Env vars: `META_GRAPH_API_VERSION` (optional override), plus per-business
+  `phoneNumberId`/`accessToken` stored in `business_integrations.config` — never a top-level
+  column, since it's per-tenant, and never sent to the browser (RLS on
+  `business_integrations` is OWNER/MANAGER-select-only, and even they only see it through the
+  dashboard, never through client-side JS holding the raw token).
 
-## Email (Resend, initial choice)
+## SMS (Twilio)
 
-- Status: **NOT STARTED**. Planned for Day 4.
-- Env vars needed: `RESEND_API_KEY`. Sender domain verification is external setup per
-  business only if we later offer custom-domain sending (Enterprise tier); MVP sends from a
-  shared platform domain with the business name in the "from" display name.
+- Status: **CODE COMPLETE / UAE SENDER REGISTRATION PENDING.** No Twilio credentials exist;
+  nothing has been sent for real.
+- What's implemented (`services/messaging/sms.ts`): uses the official `twilio` npm SDK,
+  gated by `isSmsConfigured()`, with a `statusCallback` pointed at
+  `/api/webhooks/twilio` (not yet implemented — the route doesn't exist; only the callback
+  URL is wired). Twilio's own error `status` field drives the same permanent/transient
+  retry classification as the other channels.
+- **UAE-specific reality**: the UAE (our launch market) requires a registered Sender ID or an
+  approved originator for commercial SMS under TDRA regulation — an unregistered generic
+  Twilio long-code number is not guaranteed to deliver to UAE handsets and may be filtered by
+  local carriers. This is a real, business-side regulatory approval, not something our code
+  can route around. **Do not treat a successful Twilio API call as proof of delivery in the
+  UAE without a registered sender.**
+- Exact external steps needed: (1) a Twilio account with a funded balance, (2) UAE Sender ID
+  registration (or an approved alphanumeric sender / registered local number) through
+  Twilio's regulatory bundle process, which itself requires business verification documents.
+- Env vars: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, plus a per-business
+  `fromNumber` stored in `business_integrations.config`.
 
 ## Apple Wallet
 
@@ -105,6 +165,21 @@ Status legend: **CODE COMPLETE** (implemented, works once external setup is done
 order the two buttons, but never hides either — verified live at a 390px mobile viewport.
 Neither button is ever a dead link: clicking one that isn't configured shows an inline
 "isn't set up for this business yet" message instead of doing nothing.
+
+## Known gaps from Day 4 (not silently dropped — explicitly tracked)
+
+- **Twilio status callback route doesn't exist yet** — `services/messaging/sms.ts` already
+  points `statusCallback` at `/api/webhooks/twilio`, but that route hasn't been built. Low
+  priority until a business actually has Twilio connected.
+- **WhatsApp incoming messages / STOP keyword handling** (spec Parts 29–30) — not built. A
+  real Meta webhook subscription would need `messages` field events parsed and, for opt-out
+  keywords specifically, a consent-revocation write mirroring the email bounce/complaint
+  handling already in `app/api/webhooks/resend/route.ts`.
+- **WhatsApp template sync from a connected WABA** — not built; `message_templates` rows
+  would need to be created by hand (or via a future sync job) until Embedded Signup exists.
+- **`LOYALTY_EXPIRY_REMINDER` automation can never fire** — the loyalty engine (Day 2) has no
+  points/stamps expiration concept at all; see `docs/database.md`. The automation's config UI
+  exists and can be enabled, but its evaluator is a documented permanent no-op.
 
 ## Rule for all of the above
 

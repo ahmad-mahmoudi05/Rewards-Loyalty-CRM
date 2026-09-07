@@ -14,10 +14,12 @@ import type { Database } from "@/lib/supabase/database.types";
 
 type CustomerSummary = Database["public"]["Views"]["customer_summary"]["Row"];
 type Reward = Database["public"]["Tables"]["rewards"]["Row"];
+type CustomerOffer = Database["public"]["Tables"]["customer_offers"]["Row"];
 
 export type OperationalView = {
   customer: CustomerSummary;
   rewards: Reward[];
+  offers: CustomerOffer[];
 };
 
 export type ResolveResult = { error: string } | { view: OperationalView };
@@ -43,7 +45,14 @@ async function loadOperationalView(businessId: string, customerId: string): Prom
     .eq("status", "AVAILABLE")
     .order("generated_at", { ascending: true });
 
-  return { customer, rewards: rewards ?? [] };
+  const { data: offers } = await supabase
+    .from("customer_offers")
+    .select("*")
+    .eq("customer_id", customerId)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: true });
+
+  return { customer, rewards: rewards ?? [], offers: offers ?? [] };
 }
 
 /**

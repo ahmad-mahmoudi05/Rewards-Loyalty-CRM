@@ -156,6 +156,22 @@ resolves identity. The only functions that touch `loyalty_accounts`/`rewards`/
 *separate* explicit staff action after the scan — there is no code path from "token
 resolved" to "loyalty awarded" without that.
 
+## Marketing/messaging engine (added Day 4)
+
+One generic campaign model (`campaigns`/`campaign_recipients`, channel = `EMAIL` |
+`WHATSAPP` | `SMS`) backed by one provider-abstraction layer (`services/messaging/`), not
+three parallel channel-specific systems — a `MessagingService`-shaped adapter per provider
+(`email.ts`, `whatsapp.ts`, `sms.ts`), each exposing the same `{success, providerMessageId}`
+/ `{success: false, error, permanent}` result shape so the queue worker
+(`services/campaigns/process.ts`) never branches on provider, only on channel to pick which
+adapter to call. Retention automations (`services/automations/`) share this same messaging
+layer rather than re-implementing sends — see `docs/database.md` for the full design.
+
+Background processing deliberately uses no new external service: Next.js `after()` for
+immediate post-send processing, a `/api/campaigns/process` route as the cron-driven
+durability net, and Postgres `FOR UPDATE SKIP LOCKED` for atomic work-claiming. This is the
+same reasoning as Day 1's original queue note, now actually implemented.
+
 ## Repository layout
 
 ```

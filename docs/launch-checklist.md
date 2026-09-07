@@ -98,24 +98,48 @@ scanning Smash Padel's customer token got the generic "couldn't be recognized" m
 a leak). No loyalty is ever awarded by scanning alone — see `docs/progress.md` for full
 results.
 
-## Day 4 — Marketing + automations
+## Day 4 — Marketing + automations ✅ complete, verified live
 
-- [ ] Campaign creation flow: audience segment → channel → message → eligible-recipient
-      preview (post consent-filtering) → send
-- [ ] Segmentation queries (new/returning/VIP/inactive N days/birthday month/reward available/
-      one-away/high spenders/consent-by-channel)
-- [ ] `campaign_recipients` population respecting `customer_consents`
-- [ ] Background worker (see `docs/architecture.md` — Postgres job table + scheduled function,
-      `FOR UPDATE SKIP LOCKED`) driving sends through Email first (Resend is fastest to wire
-      up without external approval), WhatsApp/SMS architecture code-complete even if the
-      provider account isn't approved yet
-- [ ] Automations: WELCOME, INACTIVE(14/21/30/45/60), BIRTHDAY, REWARD_UNLOCKED, NEAR_REWARD, VIP
-      — using `automation_runs.dedupe_key` to guarantee at-most-once per window
-- [ ] Basic campaign analytics (sent/delivered/read/failed counts)
+- [x] Campaign creation flow: audience segment → channel → message → eligible-recipient
+      preview (post consent-filtering, with an exclusion breakdown) → send now or schedule
+      (single-page builder, not a multi-step wizard with per-step draft persistence — a
+      documented scope simplification, see `docs/progress.md`)
+- [x] Segmentation: 15 segments (all/new/returning/inactive 14·30·60/reward available/one
+      stamp away/near points reward/high spender/frequent customer/consent-by-channel×3/
+      birthday month), shared between the Day 2 CRM filters and the campaign builder
+- [x] `campaign_recipients` population respecting `customer_consents` — real, frozen at send
+      time, re-checked again immediately before each dispatch
+- [x] Background worker: Next.js `after()` for immediate processing + `/api/campaigns/process`
+      as the cron-driven durability net; `FOR UPDATE SKIP LOCKED` atomic claiming — verified
+      concurrency-safe live (two simultaneous worker calls, zero double-processing)
+- [x] Email (Resend) sends for real — verified with a real delivered message, a real
+      permanent-failure classification, and a real (synthetically-signed, since Resend can't
+      reach localhost) webhook round trip including idempotent replay handling
+- [x] WhatsApp (Meta Cloud API) and SMS (Twilio) adapters are code-complete; no real send
+      attempted (no credentials) — see `docs/integrations.md` for exact blockers
+- [x] Automations: 5 fixed types per the detailed retention-automation spec (superseding this
+      checklist's original WELCOME/INACTIVE/BIRTHDAY/REWARD_UNLOCKED/NEAR_REWARD/VIP list) —
+      `INACTIVE_WINBACK`, `BIRTHDAY_REWARD`, `REWARD_READY_REMINDER`, `VIP_UPGRADE` fully
+      functional and dedup-verified; `LOYALTY_EXPIRY_REMINDER` a documented no-op (see
+      `docs/database.md`)
+- [x] Campaign analytics use real recipient-status counts, never fabricated; attribution
+      section explicitly labeled "temporal association, not causation"
+- [x] Email unsubscribe: real page + action, verified a subsequent campaign correctly
+      excludes an unsubscribed customer
+- [x] Staff invitation rebuilt as a real invite-then-accept flow with a real emailed link —
+      verified live end-to-end including reuse prevention
 
-**Day 4 acceptance test**: create an "Inactive 30 Days" email campaign; opted-out customers
-excluded from the eligible count; campaign sends; statuses update; re-running the INACTIVE
-automation the same day does not re-message anyone it already messaged.
+**Day 4 acceptance test**: ✅ **Verified live** with real data on the linked project. Created
+Brew Café with Ahmad (real email, consent yes), Sarah (fake email, consent yes), Omar (no
+consent). An "All customers" Email campaign correctly excluded Omar (2 eligible of 3
+matched), sent for real to Ahmad (delivered, real provider id), and correctly classified
+Sarah's send as a permanent failure (Resend sandbox restriction — real provider behavior, not
+a bug) — campaign rolled up to `PARTIALLY_FAILED`, never falsely `COMPLETED`. Ahmad then
+unsubscribed via the real link; a second campaign correctly excluded him. Inactive-customer
+automation fired once for a backdated customer (tag + bonus + consent-gated message), and a
+second scheduler run produced zero duplicates; the same real dedup behavior was independently
+verified for birthday, reward-ready, and VIP automations. Cross-tenant campaign injection
+(a forged customer id from a second business) was silently excluded, not leaked.
 
 ## Day 5 — Billing + analytics + polish + production
 

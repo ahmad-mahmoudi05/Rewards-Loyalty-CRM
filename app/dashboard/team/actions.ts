@@ -4,25 +4,18 @@ import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/dal";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 import { InviteStaffSchema } from "@/lib/validation/team";
+import { sendEmail } from "@/services/messaging/email";
+import { getSiteUrl } from "@/lib/site-url";
 
-export type InviteStaffState =
-  | { error?: string; success?: boolean; tempPassword?: string; email?: string }
-  | undefined;
-
-function randomTempPassword() {
-  return `Lp-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 6)}`;
-}
+export type InviteStaffState = { error?: string; success?: boolean; email?: string } | undefined;
 
 /**
- * MVP staff invitation (Part 17): no email-sending infrastructure exists
- * yet (that's Day 4's Resend integration), so a brand-new staff member's
- * temporary password is shown once to the inviting owner/manager to relay
- * manually. Assigning an EXISTING LoyalNest user (by email) to this
- * business is also supported and doesn't touch their password.
- *
- * Role is restricted to STAFF/MANAGER at the schema level (zod enum) —
- * OWNER is never an option here. See docs/database.md for the DB-level
- * backstop (business_members_guard_owner_role trigger, migration 0014).
+ * Real invite-then-accept flow (Day 4): business_id and role are fixed on
+ * the business_invitations row and never taken from the client again at
+ * acceptance time (see accept_business_invitation RPC, migration 0018) —
+ * that's what makes role/business escalation through a modified URL
+ * impossible. Superseded Day 3's "create the account + show a password
+ * once" MVP now that real email exists to deliver an actual invite link.
  */
 export async function inviteStaffMember(_state: InviteStaffState, formData: FormData): Promise<InviteStaffState> {
   const membership = await requireRole(["OWNER", "MANAGER"]);
@@ -37,43 +30,42 @@ export async function inviteStaffMember(_state: InviteStaffState, formData: Form
   }
 
   const service = createServiceRoleClient();
-  const { email, fullName, role } = parsed.data;
+  const { email, role } = parsed.data;
 
-  const { data: existingProfile } = await service.from("profiles").select("id").eq("email", email).maybeSingle();
-
-  let profileId: string;
-  let tempPassword: string | undefined;
-
-  if (existingProfile) {
-    profileId = existingProfile.id;
-  } else {
-    tempPassword = randomTempPassword();
-    const { data: created, error: createError } = await service.auth.admin.createUser({
-      email,
-      password: tempPassword,
-      email_confirm: true,
-      user_metadata: { full_name: fullName },
-    });
-    if (createError || !created.user) {
-      return { error: "Could not create an account for this email. It may already be in use." };
-    }
-    profileId = created.user.id;
+  const { data: existingMember } = await service
+    .from("business_members")
+    .select("id, profile:profiles!business_members_profile_id_fkey(email)")
+    .eq("business_id", membership.business_id);
+  if (existingMember?.some((m) => m.profile?.email === email)) {
+    return { error: "This person is already part of your team." };
   }
 
-  const { error: memberError } = await service.from("business_members").insert({
-    business_id: membership.business_id,
-    profile_id: profileId,
-    role,
-    invited_by: membership.profile_id,
+  const { data: invitation, error: inviteError } = await service
+    .from("business_invitations")
+    .insert({ business_id: membership.business_id, email, role, invited_by: membership.profile_id })
+    .select("token")
+    .single();
+
+  if (inviteError || !invitation) {
+    return { error: "Could not create this invitation. Please try again." };
+  }
+
+  const siteUrl = await getSiteUrl();
+  const inviteUrl = `${siteUrl}/invite/${invitation.token}`;
+
+  const result = await sendEmail({
+    to: email,
+    subject: `You've been invited to join ${membership.business.name} on LoyalNest`,
+    html: `<p>You've been invited to join <strong>${membership.business.name}</strong> on LoyalNest as ${role === "MANAGER" ? "a manager" : "staff"}.</p><p><a href="${inviteUrl}">Accept invitation</a></p><p>This link expires in 7 days.</p>`,
+    text: `You've been invited to join ${membership.business.name} on LoyalNest as ${role === "MANAGER" ? "a manager" : "staff"}.\n\nAccept: ${inviteUrl}\n\nThis link expires in 7 days.`,
+    fromName: "LoyalNest",
+    idempotencyKey: `invite-${invitation.token}`,
   });
 
-  if (memberError) {
-    if (memberError.code === "23505") {
-      return { error: "This person is already part of your team." };
-    }
-    return { error: "Could not add this team member. Please try again." };
+  if (!result.success) {
+    return { error: `Invitation created but the email could not be sent: ${result.error}` };
   }
 
   revalidatePath("/dashboard/team");
-  return { success: true, tempPassword, email };
+  return { success: true, email };
 }
