@@ -13,8 +13,23 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LoyalNest",
-  description: "Loyalty that brings customers back.",
+  metadataBase: process.env.NEXT_PUBLIC_APP_URL ? new URL(process.env.NEXT_PUBLIC_APP_URL) : undefined,
+  title: {
+    default: "LoyalNest — Turn first-time customers into loyal regulars",
+    template: "%s",
+  },
+  description: "Digital loyalty, customer CRM, Wallet passes, and automated WhatsApp, SMS, and email marketing — all in one platform.",
+  openGraph: {
+    title: "LoyalNest",
+    description: "Turn first-time customers into loyal regulars.",
+    type: "website",
+    siteName: "LoyalNest",
+  },
+  twitter: {
+    card: "summary",
+    title: "LoyalNest",
+    description: "Turn first-time customers into loyal regulars.",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

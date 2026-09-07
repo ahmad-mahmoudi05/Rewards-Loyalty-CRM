@@ -1,9 +1,11 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export type AcceptInviteState = { error?: string } | undefined;
 
@@ -44,6 +46,11 @@ export async function signUpAndAcceptInvite(
   _state: AcceptInviteState,
   formData: FormData
 ): Promise<AcceptInviteState> {
+  const ip = getClientIp(await headers());
+  if (!checkRateLimit("invite-signup", ip, 10, 60 * 60_000).allowed) {
+    return { error: "Too many attempts. Please try again later." };
+  }
+
   const invitation = await loadValidInvitation(token);
   if (!invitation) return { error: "This invitation is invalid or has expired." };
 

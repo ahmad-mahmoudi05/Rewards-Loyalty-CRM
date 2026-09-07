@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { BUSINESS_TYPES } from "@/lib/validation/onboarding";
+import { useActionState, useState } from "react";
+import { BUSINESS_TYPES, PLAN_CHOICES } from "@/lib/validation/onboarding";
 import { createBusiness } from "./actions";
 
 const inputClass =
@@ -10,9 +10,16 @@ const labelClass = "text-sm font-medium";
 
 export function OnboardingForm() {
   const [state, formAction, pending] = useActionState(createBusiness, undefined);
+  const [planCode, setPlanCode] = useState<string>("GROWTH");
 
   return (
     <form action={formAction} className="flex flex-col gap-8">
+      <ol className="flex items-center justify-center gap-2 text-xs font-medium text-foreground/50">
+        <li className="rounded-full bg-foreground px-3 py-1 text-background">1. Business</li>
+        <li className="rounded-full bg-foreground/10 px-3 py-1">2. Plan</li>
+        <li className="rounded-full bg-foreground/10 px-3 py-1">3. Dashboard</li>
+      </ol>
+
       <section className="flex flex-col gap-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground/50">
           Your business
@@ -90,6 +97,37 @@ export function OnboardingForm() {
             Phone (optional)
           </label>
           <input id="locationPhone" name="locationPhone" className={inputClass} />
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-4">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground/50">
+          Start your 14-day free trial
+        </h2>
+        <p className="text-xs text-foreground/60">
+          No payment required now. Pick the plan closest to what you&apos;ll need — you can
+          change it anytime in Billing.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {PLAN_CHOICES.map((plan) => (
+            <label
+              key={plan.code}
+              className={`flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-sm transition-colors ${
+                planCode === plan.code ? "border-foreground bg-foreground/5" : "border-foreground/15 hover:bg-foreground/5"
+              }`}
+            >
+              <input
+                type="radio"
+                name="planCode"
+                value={plan.code}
+                checked={planCode === plan.code}
+                onChange={() => setPlanCode(plan.code)}
+                className="sr-only"
+              />
+              <span className="font-medium">{plan.label}</span>
+              <span className="text-xs text-foreground/60">{plan.blurb}</span>
+            </label>
+          ))}
         </div>
       </section>
 

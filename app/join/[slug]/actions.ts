@@ -1,9 +1,11 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 import { normalizePhone } from "@/lib/phone";
 import { JoinFormSchema } from "@/lib/validation/join";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export type JoinState = { error?: string } | undefined;
 
@@ -11,6 +13,11 @@ export async function joinBusiness(_state: JoinState, formData: FormData): Promi
   const slug = formData.get("businessSlug");
   if (typeof slug !== "string" || !slug) {
     return { error: "Something went wrong. Please reload the page." };
+  }
+
+  const ip = getClientIp(await headers());
+  if (!checkRateLimit("join", ip, 10, 60_000).allowed) {
+    return { error: "Too many attempts. Please wait a minute and try again." };
   }
 
   const parsed = JoinFormSchema.safeParse({

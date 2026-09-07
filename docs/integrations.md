@@ -9,6 +9,29 @@ need and its current status.
 Status legend: **CODE COMPLETE** (implemented, works once external setup is done) /
 **EXTERNAL SETUP PENDING** (needs an account/approval outside our control) / **NOT STARTED**.
 
+## Day 5 launch status classification
+
+Per-capability, not per-provider (a capability can be production-ready even if the provider
+underneath it needs one more external step):
+
+| Capability | Status |
+|---|---|
+| Multi-tenant SaaS foundation, auth, RLS | **PRODUCTION READY** |
+| Customer CRM, loyalty engine (stamps/points), QR/scanner | **PRODUCTION READY** |
+| Digital loyalty card | **PRODUCTION READY** |
+| Email campaigns/automations | **PRODUCTION READY** after a verified Resend sending domain (currently sandbox-only, see below) |
+| Stripe billing (Checkout, Portal, webhook, entitlements, trial) | **CODE READY — NO STRIPE ACCOUNT IN THIS ENVIRONMENT**, tested with synthetic signed events |
+| WhatsApp campaigns/automations, opt-out, template sync | **CODE READY — META APP REVIEW + EMBEDDED SIGNUP REQUIRED** |
+| SMS campaigns/automations, opt-out | **CODE READY — TWILIO ACCOUNT + UAE SENDER REGISTRATION REQUIRED** |
+| Apple Wallet | **CODE READY — APPLE DEVELOPER CERTIFICATES REQUIRED** |
+| Google Wallet | **CODE READY — GOOGLE WALLET ISSUER ACCOUNT REQUIRED** |
+| Analytics (real data, date-range filters) | **PRODUCTION READY** |
+| Password reset / auth production config | **CODE READY — REQUIRES A DELIBERATE HUMAN STEP** (site_url/redirect URLs + the `enable_confirmations` decision, see README.md "Deploying to production") |
+| Production deployment (Vercel) | **CODE READY — NOT YET DEPLOYED** (this environment has no Vercel login; see README.md) |
+| Loyalty points/stamps expiry | **POST-LAUNCH** (deferred at Day 4.5 — see `docs/database.md`) |
+| Legal pages (Privacy/Terms) | **POST-LAUNCH** — placeholder content live at `/privacy`/`/terms`, explicitly marked as requiring real legal review before broad commercial launch |
+| Custom domain | **POST-LAUNCH** — launch on the Vercel-provided URL first, see `docs/launch-checklist.md` "Domain readiness" |
+
 ## Supabase (Auth, Postgres, Storage)
 
 - Status: **CODE COMPLETE** for Day 1 scope (auth, schema, RLS). Project already linked
@@ -21,12 +44,72 @@ Status legend: **CODE COMPLETE** (implemented, works once external setup is done
 
 ## Stripe (SaaS billing)
 
-- Status: **NOT STARTED**. Planned for Day 5.
-- Env vars needed: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-  `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`.
-- External setup: a Stripe account with Checkout + Customer Portal enabled, and Products/
-  Prices matching `public.plans` (`STARTER`/`GROWTH`/`PRO`) created in Stripe with their IDs
-  stored back onto the `plans` rows.
+- Status: **CODE COMPLETE, TESTED with synthetic signed events / NO REAL STRIPE ACCOUNT IN
+  THIS ENVIRONMENT.** No Stripe keys were provided this session (a deliberate choice — see
+  `docs/progress.md` Session 6) — everything below is real, correct code exercised against
+  this codebase's own webhook route, never against Stripe's live API.
+- **Checkout** (`services/billing/stripe.ts::createCheckoutSession`,
+  `app/dashboard/billing/actions.ts::startCheckout`): real `stripe.checkout.sessions.create`
+  call in subscription mode, reusing an existing `stripe_customer_id` if the business has
+  one. Gated by `plans.stripe_price_id` being set — with no Stripe price mapped, the plan
+  shows "Unavailable" on the Billing page rather than a dead/broken button.
+- **Customer Portal** (`createPortalSession`, `openBillingPortal`): real
+  `stripe.billingPortal.sessions.create` call, redirects the owner to Stripe's own hosted
+  portal (payment method, invoices, cancel — all Stripe's own UI, not rebuilt here).
+- **Webhook** (`app/api/webhooks/stripe/route.ts`): signature-verified
+  (`stripe.webhooks.constructEvent`), idempotent (`stripe_webhook_events`, Stripe's own event
+  id as the dedupe key), handles `checkout.session.completed` (links `stripe_customer_id`),
+  `customer.subscription.created`/`.updated` (syncs status via
+  `services/billing/stripe.ts::mapStripeStatus`, resolves `plan_id` from the subscription
+  item's Stripe Price id, sets `current_period_end` — **note**: as of the installed `stripe`
+  SDK (22.6.1)'s own type definitions, `current_period_end` lives on each subscription
+  *item*, not on the top-level `Subscription` object anymore; verified directly against
+  `node_modules/stripe`'s `.d.ts` files rather than assumed from training data, since this is
+  exactly the kind of API-shape drift AGENTS.md warns about), and
+  `customer.subscription.deleted` (forces `CANCELLED`). `invoice.paid`/`invoice.payment_failed`
+  are recorded for observability only — the authoritative state change for both always
+  arrives as its own `customer.subscription.updated` event, so applying it twice was judged a
+  correctness risk (two events racing on the same fields) rather than a redundancy worth
+  having. **Verified live** (27/27 checks, synthetic events signed with
+  `stripe.webhooks.generateTestHeaderString` — Stripe's own documented tool for testing
+  signature verification without a live account): invalid signature rejected (401) before
+  touching the database; checkout completion links the Stripe customer id; subscription
+  created/updated correctly maps status, resolves plan from price id, and reads
+  `current_period_end` from the item; a duplicate event id is a no-op (proven by manually
+  flipping the DB value between two identical deliveries and confirming the second delivery
+  did not re-apply the event); subscription deletion forces `CANCELLED`; an event for an
+  unresolvable business is acknowledged but never guessed onto another business's row.
+- **Trial**: every business starts on a 14-day trial at onboarding
+  (`app/onboarding/actions.ts`), no card required — a plain `subscriptions` insert relying on
+  the new `subscriptions_insert_owner_once` RLS policy (migration `0024`), not a service-role
+  bypass. **Verified live**: an OWNER can insert their own business's first subscription row;
+  a second insert for the same business is rejected by RLS; an OWNER cannot insert or read a
+  subscription for a business they don't own.
+- **Entitlements** (`lib/entitlements.ts`): the single read layer every plan/feature check
+  goes through — `maxLocations`/`maxStaff`/`maxCustomers`/channel flags come straight from
+  `plans` (unchanged since Day 1 — the seed data already had the exact entitlement flags and
+  AED 149/299/599 prices this session's spec asked for). Enforced server-side (never just a
+  hidden UI button) at: team invites (`max_staff`, counting pending invitations too),
+  location creation (`max_locations` — see "Locations" below, a genuine Day 5 gap this
+  closed), campaign channel selection (`email_enabled`/`whatsapp_enabled`/`sms_enabled`),
+  automation enabling (`automation_enabled`, re-checked on every scheduled run — not just at
+  save time, so a downgrade stops a previously-enabled automation), and recording a
+  transaction (the core "business action" billing gate — `billingGateMessage`, blocked once a
+  trial expires or a subscription falls out of `TRIALING`/`ACTIVE`).
+- **Locations**: there was previously no way to add a second location at all — `Locations`
+  was a read-only list. Without that, the Pro plan's headline "multi-location" entitlement had
+  nothing to gate. Added `app/dashboard/locations/actions.ts::createLocation` (max_locations
+  enforced), the minimum needed to make that entitlement meaningful — not a general
+  locations-management feature build-out.
+- External setup needed for a real launch: (1) a Stripe account, (2) Products/Prices created
+  matching `plans` (STARTER/GROWTH/PRO — `supabase/migrations/0009_seed_plans.sql` has the
+  current AED 149/299/599 prices, configurable there, not hardcoded in the app), their ids
+  written to `plans.stripe_price_id` (one-time manual SQL, not a migration — see README.md
+  "Deploying to production"), (3) a webhook endpoint registered in the Stripe dashboard
+  pointing at `<deployment>/api/webhooks/stripe` for the six events listed above.
+- Env vars: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+  `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (currently unused — Checkout/Portal are both
+  server-redirect flows).
 
 ## Email (Resend) — Day 4, REAL and verified live
 

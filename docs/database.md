@@ -32,6 +32,7 @@ reproducible and reviewable.
 | `0021_customer_summary_unsubscribe_token.sql` | Adds `unsubscribe_token` to `customer_summary` |
 | `0022_provider_webhooks.sql` | `inbound_messages`; template sync columns; removes `LOYALTY_EXPIRY_REMINDER` |
 | `0023_message_templates_upsert_fix.sql` | Fixes a partial-index/`ON CONFLICT` bug found while building template sync |
+| `0024_stripe_billing.sql` | `plans.stripe_price_id`, `subscriptions.trial_ends_at`, widened status set, `subscriptions_insert_owner_once` RLS, `stripe_webhook_events` |
 
 ## Design choices worth remembering
 
@@ -340,6 +341,60 @@ out of time":
    expiry lots (3/7/14/30-day configurable lead time), re-checking `remaining_amount > 0`
    immediately before sending (same re-check-at-send-time pattern every other automation
    already uses), deduplicated per lot per lead-time window.
+
+## Day 5 additions
+
+- `0024_stripe_billing.sql`:
+  - `plans.stripe_price_id` — nullable Stripe Price id per plan. `null` until a real Stripe
+    account exists; Checkout is gated on it being set, same pattern as every other provider
+    integration (WhatsApp/SMS/Wallet) already uses.
+  - `subscriptions.trial_ends_at` + a widened `status` check (adds `INCOMPLETE_EXPIRED`,
+    `UNPAID`, `PAUSED` — Stripe's real subscription-status vocabulary, not the smaller Day 1
+    placeholder set).
+  - `subscriptions_insert_owner_once` RLS policy — the one legitimate client-facing write on
+    `subscriptions` (Day 1 only ever granted `SELECT`). Scoped to `private.business_role(...)
+    = 'OWNER'` **and** `not exists (... where business_id = ...)`, so it can only ever create
+    a business's *first* subscription row (the trial, at onboarding) — never rewrite an
+    existing paid subscription's plan/status from the browser. Every subsequent state change
+    comes only from the Stripe webhook (service-role, bypasses RLS entirely). Verified live:
+    an OWNER can insert their own business's first row; a second insert for the same business
+    is rejected; an OWNER cannot insert into or read a different business's subscription (see
+    `docs/integrations.md` "Stripe" for the full live test list).
+  - `stripe_webhook_events` — idempotency log, same shape as `message_events`/
+    `inbound_messages`. No client-facing RLS policy at all (not even OWNER-select) — an
+    internal dedupe log, not a customer-facing audit trail.
+
+### Entitlements layer (`lib/entitlements.ts`)
+
+A read-only layer over `subscriptions` joined to `plans` — every plan/feature check in the
+app goes through `getEntitlements()`, never a raw `plan.code === 'PRO'` string comparison
+scattered through the UI. Derives `isTrialing`/`isTrialExpired`/`isInGoodStanding` from
+`status` + `trial_ends_at` compared against the current time (a pure computation — no
+scheduled job flips `status` on trial expiry; Stripe itself is what would transition a real
+paid subscription's status via the webhook, and an unconverted trial just becomes
+"expired" the moment `trial_ends_at` passes, computed fresh on every read). A business with
+no subscription row at all (shouldn't happen after this session, since onboarding always
+creates one) falls back to the most restrictive state, never unlimited access.
+
+Enforced server-side — never only a hidden UI button — at: team invites (`max_staff`,
+counting pending invitations too, so an owner can't invite past the limit while several sit
+unaccepted), location creation (`max_locations` — see below), campaign channel selection
+(`email_enabled`/`whatsapp_enabled`/`sms_enabled`), automation enabling (`automation_enabled`,
+re-checked on *every scheduled run*, not just at save time — a business that downgrades or
+lets its trial lapse after enabling an automation stops triggering it), and recording a
+transaction (`record_transaction`'s call site — the core "business action" billing gate).
+Redemption/reversal/wallet-token-rotation are deliberately **not** gated the same way: those
+touch value a customer already earned, not new usage, and the spec's "do not destroy data"
+principle argues for erring toward not blocking them.
+
+### Locations: a genuine Day 5 gap closed, not a new feature
+
+Before this session, `/dashboard/locations` was read-only — there was no way to add a second
+location at all, which meant the Pro plan's headline `max_locations` entitlement had nothing
+to actually gate. `app/dashboard/locations/actions.ts::createLocation` is the minimum needed
+to make that entitlement meaningful (name/address/phone, `max_locations` enforced), not a
+general locations-management feature build-out (no edit/delete/staff-assignment-per-location
+UI was added — out of scope for a launch-readiness day).
 
 ## Gotcha found during testing: INSERT ... RETURNING re-checks the SELECT policy
 

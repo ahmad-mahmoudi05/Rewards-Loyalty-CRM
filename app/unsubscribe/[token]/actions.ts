@@ -1,7 +1,9 @@
 "use server";
 
 import { z } from "zod";
+import { headers } from "next/headers";
 import { createServiceRoleClient } from "@/lib/supabase/service";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 export type UnsubscribeState = { error?: string; success?: boolean } | undefined;
 
@@ -12,6 +14,11 @@ export async function confirmUnsubscribe(
 ): Promise<UnsubscribeState> {
   if (!z.uuid().safeParse(token).success) {
     return { error: "This unsubscribe link is invalid." };
+  }
+
+  const ip = getClientIp(await headers());
+  if (!checkRateLimit("unsubscribe", ip, 20, 60 * 60_000).allowed) {
+    return { error: "Too many attempts. Please try again later." };
   }
 
   const supabase = createServiceRoleClient();

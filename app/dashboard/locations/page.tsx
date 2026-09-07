@@ -1,15 +1,18 @@
 import { requireBusinessContext } from "@/lib/dal";
 import { createClient } from "@/lib/supabase/server";
+import { getEntitlements } from "@/lib/entitlements";
+import { CreateLocationForm } from "./create-location-form";
 
 export default async function LocationsPage() {
   const membership = await requireBusinessContext();
   const supabase = await createClient();
 
-  const { data: locations } = await supabase
-    .from("locations")
-    .select("*")
-    .eq("business_id", membership.business_id)
-    .order("created_at", { ascending: true });
+  const [{ data: locations }, entitlements] = await Promise.all([
+    supabase.from("locations").select("*").eq("business_id", membership.business_id).order("created_at", { ascending: true }),
+    getEntitlements(supabase, membership.business_id),
+  ]);
+
+  const canManage = membership.role === "OWNER" || membership.role === "MANAGER";
 
   return (
     <div className="flex flex-col gap-6">
@@ -17,9 +20,12 @@ export default async function LocationsPage() {
         <h1 className="text-2xl font-semibold">Locations</h1>
         <p className="text-sm text-foreground/70">
           Every location shares this business&apos;s customers and loyalty program by
-          default.
+          default. {locations?.length ?? 0} of {entitlements.maxLocations} used on your{" "}
+          {entitlements.planName} plan.
         </p>
       </div>
+
+      {canManage && <CreateLocationForm />}
 
       <div className="flex flex-col divide-y divide-foreground/10 rounded-lg border border-foreground/10">
         {locations?.length ? (

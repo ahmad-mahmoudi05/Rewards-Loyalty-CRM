@@ -11,6 +11,7 @@ import { processQueuedCampaigns } from "@/services/campaigns/process";
 import { sendEmail } from "@/services/messaging/email";
 import { renderEmailHtml } from "@/services/messaging/email-template";
 import { renderTemplate, SAMPLE_PREVIEW_CONTEXT } from "@/services/messaging/render-template";
+import { getEntitlements, billingGateMessage } from "@/lib/entitlements";
 
 export type CreateCampaignState = { error?: string } | undefined;
 
@@ -34,7 +35,17 @@ export async function createCampaign(_state: CreateCampaignState, formData: Form
 
   const supabase = await createClient();
 
+  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const gateMessage = billingGateMessage(entitlements);
+  if (gateMessage) return { error: gateMessage };
+
   if (parsed.data.channel !== "EMAIL") {
+    const label = parsed.data.channel === "WHATSAPP" ? "WhatsApp" : "SMS";
+    const channelEntitled = parsed.data.channel === "WHATSAPP" ? entitlements.whatsappEnabled : entitlements.smsEnabled;
+    if (!channelEntitled) {
+      return { error: `${label} campaigns aren't included in your ${entitlements.planName} plan. Upgrade in Billing.` };
+    }
+
     const provider = parsed.data.channel === "WHATSAPP" ? "WHATSAPP" : "SMS_TWILIO";
     const { data: integration } = await supabase
       .from("business_integrations")
@@ -43,9 +54,10 @@ export async function createCampaign(_state: CreateCampaignState, formData: Form
       .eq("provider", provider)
       .maybeSingle();
     if (integration?.status !== "CONNECTED") {
-      const label = parsed.data.channel === "WHATSAPP" ? "WhatsApp" : "SMS";
       return { error: `Connect your ${label} account before sending ${label} campaigns.` };
     }
+  } else if (!entitlements.emailEnabled) {
+    return { error: `Email campaigns aren't included in your ${entitlements.planName} plan. Upgrade in Billing.` };
   }
 
   const { data: campaign, error: createError } = await supabase
@@ -79,6 +91,10 @@ export type SendCampaignState = { error?: string; success?: boolean } | undefine
 export async function sendCampaign(campaignId: string): Promise<SendCampaignState> {
   const membership = await requireRole(["OWNER", "MANAGER"]);
   const supabase = await createClient();
+
+  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const gateMessage = billingGateMessage(entitlements);
+  if (gateMessage) return { error: gateMessage };
 
   const { data: campaign } = await supabase
     .from("campaigns")

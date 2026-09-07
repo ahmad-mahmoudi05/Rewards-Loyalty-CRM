@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { requireBusinessContext } from "@/lib/dal";
 import { RecordTransactionSchema, RedeemRewardSchema } from "@/lib/validation/transaction";
+import { getEntitlements, billingGateMessage } from "@/lib/entitlements";
 
 export type RecordTransactionState = { error?: string; success?: boolean } | undefined;
 
@@ -25,6 +26,11 @@ export async function recordTransaction(
   }
 
   const supabase = await createClient();
+
+  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const gateMessage = billingGateMessage(entitlements);
+  if (gateMessage) return { error: gateMessage };
+
   const { error } = await supabase.rpc("record_transaction", {
     p_business_id: membership.business_id,
     p_customer_id: parsed.data.customerId,

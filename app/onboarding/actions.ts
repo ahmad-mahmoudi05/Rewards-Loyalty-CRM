@@ -20,6 +20,7 @@ export async function createBusiness(
     locationName: formData.get("locationName"),
     locationAddress: formData.get("locationAddress") || undefined,
     locationPhone: formData.get("locationPhone") || undefined,
+    planCode: formData.get("planCode") || undefined,
   });
 
   if (!parsed.success) {
@@ -89,6 +90,26 @@ export async function createBusiness(
 
   if (locationError) {
     return { error: locationError.message };
+  }
+
+  // Every business starts on a 14-day trial of the chosen plan, no payment
+  // collected — Stripe Checkout (Billing page) is how a trial converts to a
+  // real subscription. Deliberately a plain insert relying on the new
+  // subscriptions_insert_owner_once RLS policy (migration 0024), not a
+  // service-role bypass: the OWNER business_members row from
+  // on_business_created has already committed by this point (this is a
+  // separate statement, not chained RETURNING off the businesses insert —
+  // see the Day 1 gotcha documented in docs/database.md), so
+  // private.business_role(business_id) = 'OWNER' evaluates correctly here.
+  const { data: plan } = await supabase.from("plans").select("id").eq("code", parsed.data.planCode).single();
+  if (plan) {
+    const trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString();
+    await supabase.from("subscriptions").insert({
+      business_id: business.id,
+      plan_id: plan.id,
+      status: "TRIALING",
+      trial_ends_at: trialEndsAt,
+    });
   }
 
   redirect("/dashboard");

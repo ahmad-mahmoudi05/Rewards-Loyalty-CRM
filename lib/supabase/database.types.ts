@@ -1344,6 +1344,7 @@ export type Database = {
           name: string
           price_monthly: number
           sms_enabled: boolean
+          stripe_price_id: string | null
           whatsapp_enabled: boolean
           white_label_enabled: boolean
         }
@@ -1362,6 +1363,7 @@ export type Database = {
           name: string
           price_monthly: number
           sms_enabled?: boolean
+          stripe_price_id?: string | null
           whatsapp_enabled?: boolean
           white_label_enabled?: boolean
         }
@@ -1380,6 +1382,7 @@ export type Database = {
           name?: string
           price_monthly?: number
           sms_enabled?: boolean
+          stripe_price_id?: string | null
           whatsapp_enabled?: boolean
           white_label_enabled?: boolean
         }
@@ -1585,6 +1588,24 @@ export type Database = {
           },
         ]
       }
+      stripe_webhook_events: {
+        Row: {
+          created_at: string
+          id: string
+          type: string
+        }
+        Insert: {
+          created_at?: string
+          id: string
+          type: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          type?: string
+        }
+        Relationships: []
+      }
       subscriptions: {
         Row: {
           business_id: string
@@ -1596,6 +1617,7 @@ export type Database = {
           status: string
           stripe_customer_id: string | null
           stripe_subscription_id: string | null
+          trial_ends_at: string | null
           updated_at: string
         }
         Insert: {
@@ -1608,6 +1630,7 @@ export type Database = {
           status?: string
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
+          trial_ends_at?: string | null
           updated_at?: string
         }
         Update: {
@@ -1620,6 +1643,7 @@ export type Database = {
           status?: string
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
+          trial_ends_at?: string | null
           updated_at?: string
         }
         Relationships: [

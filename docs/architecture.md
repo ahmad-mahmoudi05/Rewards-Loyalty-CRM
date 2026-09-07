@@ -186,6 +186,34 @@ Twilio webhooks: design" for the exact per-provider mechanics (Meta: `phone_numb
 business; Twilio: signature can only be validated *after* resolving the business from the
 payload's own `AccountSid`, since each business has its own `authToken`).
 
+## Billing + entitlements (added Day 5)
+
+Real Stripe billing (`services/billing/stripe.ts`, `app/api/webhooks/stripe/route.ts`) follows
+the exact same shape as every other provider webhook (verify signature → resolve tenant from
+payload → idempotent event log → apply state last) — see "Provider webhooks / tenant
+resolution" above. `lib/entitlements.ts` is the one read layer every plan/feature check goes
+through (`plans` + `subscriptions`, unchanged schema from Day 1 — this session added Stripe
+price mapping and trial tracking, not a new model); enforcement happens server-side at the
+specific write actions it gates, never only in the UI. Full design in `docs/database.md` "Day
+5 additions."
+
+## Auth production configuration (added Day 5)
+
+Day 1 disabled email confirmation (`enable_confirmations = false` in
+`supabase/config.toml`) for signup velocity during development. This is a **deliberate,
+still-current** decision, not an oversight left over — see the comment directly above that
+line in `config.toml` for the full reasoning (Supabase's built-in mailer is rate-limited to 2
+emails/hour, unsuitable for real signup volume; flipping confirmations on requires a real SMTP
+provider configured first). Password reset (`/forgot-password` → `/auth/confirm` →
+`/reset-password`, Supabase's `token_hash`+`type` pattern via `verifyOtp`) is fully built and
+independent of that decision — it works regardless of whether signup confirmation is on.
+`supabase/templates/{recovery,confirmation}.html` point both flows at this app's own
+`/auth/confirm` route rather than Supabase's default fragment-based redirect, which doesn't
+work with a server-side session (`@supabase/ssr`) at all. `site_url`/`additional_redirect_urls`
+in `config.toml` are still `localhost` — flagged with a `TODO` comment directly above them —
+since no production URL exists in this environment; update and `supabase config push` those
+deliberately once deployed, per README.md "Deploying to production."
+
 ## Repository layout
 
 ```

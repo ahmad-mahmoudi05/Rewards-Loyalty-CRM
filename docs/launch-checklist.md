@@ -181,24 +181,53 @@ callback idempotency, unknown-`AccountSid` rejection, failure-reason mapping, in
 STOP); and template-fixture mapping (correct field extraction, an empty-`components` template
 handled without crashing, pagination cursor extraction). All test data cleaned up after.
 
-## Day 5 — Billing + analytics + polish + production
+## Day 5 — Billing + launch readiness ✅ code complete, tested locally / not yet deployed
 
-- [ ] Revisit `supabase/config.toml` `[auth]` section deliberately for production (re-enable
-      `enable_confirmations`, tighten email `max_frequency`, set the real `site_url`/
-      `additional_redirect_urls`) — Day 1 pushed the local-dev template defaults to the
-      hosted project to unblock fast iteration; see `docs/progress.md`.
-- [ ] Stripe Checkout + Customer Portal + webhook handler (verified signature, idempotent)
-- [ ] Plan entitlements enforced (max locations/staff/customers, channel flags)
-- [ ] Analytics dashboard (customers, repeat rate, transactions, tracked revenue, rewards
-      redeemed, campaign performance) with 7/30/90-day + custom filters
-- [ ] Loading/empty/error states across the dashboard
-- [ ] `npm run build`, `npm run lint`, `tsc --noEmit` all clean
-- [ ] Production env vars documented in `.env.example`
-- [ ] Deploy to Vercel, smoke-test the full flow against production
+- [x] Stripe Checkout + Customer Portal + webhook (signature-verified, idempotent) — 27/27
+      synthetic live checks passed, see `docs/integrations.md` "Stripe"
+- [x] Plan entitlements enforced server-side (max locations/staff, channel flags,
+      automations, trial/billing gate on recording a transaction) — see `docs/database.md`
+      "Entitlements layer"
+- [x] 14-day free trial at onboarding, no card required; plan chooser added to the
+      onboarding form
+- [x] Locations: added the missing "create a second location" path (`max_locations` had
+      nothing to gate before this)
+- [x] Password reset (`/forgot-password` → `/auth/confirm` → `/reset-password`), Supabase's
+      `token_hash`+`type` pattern, custom `recovery.html`/`confirmation.html` email templates
+- [x] Auth production config reviewed and a deliberate decision recorded (confirmations stay
+      off until real SMTP exists; `site_url`/redirect URLs flagged with a TODO for the real
+      deployment URL) — see `docs/architecture.md` "Auth production configuration"
+- [x] Landing page polished (more feature coverage, pricing teaser, footer with legal links);
+      real `/pricing` page reading `plans` from the database, never hardcoded prices
+- [x] Dashboard overview rebuilt with real data throughout (previously had one hardcoded
+      "Active campaigns: 0"); Analytics rebuilt from a placeholder into a real page with
+      7/30/90-day + custom date-range filters and a campaign-performance table
+- [x] Error boundaries (`error.tsx`, `global-error.tsx`, `not-found.tsx`) — production never
+      shows a raw stack trace
+- [x] SEO: `robots.ts`/`sitemap.ts`, Open Graph metadata, dashboard marked `noindex`
+- [x] Legal placeholders (`/privacy`, `/terms`) — explicitly marked as requiring real legal
+      review before broad commercial launch, not fabricated legal promises
+- [x] Lightweight in-memory rate limiting on public write endpoints (signup, login,
+      forgot-password, join, invite-signup, unsubscribe) — a deliberately simple fixed-window
+      limiter, not a distributed one (see `lib/rate-limit.ts` for the accepted limitation)
+- [x] `vercel.json` cron config for the two existing cron-facing routes
+- [x] `npm run build`, `npm run lint`, `tsc --noEmit` all clean
+- [x] Production env vars documented in `.env.example` and README.md "Deploying to
+      production," including two real gaps found and fixed (`RESEND_WEBHOOK_SECRET` and
+      `CRON_SECRET` were used by existing code but missing from `.env.example` since Day 4)
+- [ ] **Not deployed to Vercel** — no Vercel login/token exists in this environment; the user
+      explicitly chose to deploy via the Vercel dashboard themselves rather than have this
+      session attempt it. README.md "Deploying to production" has the exact steps.
+- [ ] **Not tested against a real production URL** — depends on the deployment above.
+- [ ] **Stripe/WhatsApp/Twilio/Apple/Google Wallet still need real accounts** — unchanged
+      external blockers, see `docs/integrations.md` "Day 5 launch status classification."
 
-**Day 5 acceptance test**: a real business can sign up, create a business, configure
-branding/loyalty, generate a signup QR, register a customer, earn + redeem a reward, send a
-working campaign, use an automation, and view analytics — in production.
+**Day 5 acceptance test**: everything gated on real external accounts (Stripe checkout with
+real money, WhatsApp/SMS sends, a live Vercel URL, a physical phone's camera against the
+scanner) could not be exercised in this environment — see `docs/progress.md` Session 6 for
+exactly what *was* verified live (billing webhook/RLS: 27/27 synthetic checks) versus what
+remains for the user to verify after deployment (README.md "Deploying to production" step 6
+is the exact checklist).
 
 ## Priority order if behind schedule
 

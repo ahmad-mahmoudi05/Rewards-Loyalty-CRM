@@ -2,10 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/dal";
+import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service";
 import { InviteStaffSchema } from "@/lib/validation/team";
 import { sendEmail } from "@/services/messaging/email";
 import { getSiteUrl } from "@/lib/site-url";
+import { getEntitlements, usageLimitMessage } from "@/lib/entitlements";
 
 export type InviteStaffState = { error?: string; success?: boolean; email?: string } | undefined;
 
@@ -39,6 +41,27 @@ export async function inviteStaffMember(_state: InviteStaffState, formData: Form
   if (existingMember?.some((m) => m.profile?.email === email)) {
     return { error: "This person is already part of your team." };
   }
+
+  // Entitlement enforcement (Day 5): counts *current members + pending
+  // invitations* against the plan's max_staff, not just accepted members —
+  // otherwise an owner could invite past the limit while several
+  // invitations sit unaccepted. Rejected server-side, not just a hidden
+  // "invite" button.
+  const supabase = await createClient();
+  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const { count: pendingInvites } = await service
+    .from("business_invitations")
+    .select("id", { count: "exact", head: true })
+    .eq("business_id", membership.business_id)
+    .is("accepted_at", null);
+  const currentSeats = (existingMember?.length ?? 0) + (pendingInvites ?? 0);
+  const limitMessage = usageLimitMessage({
+    current: currentSeats,
+    limit: entitlements.maxStaff,
+    resource: "team members",
+    planName: entitlements.planName,
+  });
+  if (limitMessage) return { error: limitMessage };
 
   const { data: invitation, error: inviteError } = await service
     .from("business_invitations")

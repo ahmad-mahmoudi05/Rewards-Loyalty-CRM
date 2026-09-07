@@ -810,3 +810,226 @@ linked project, types regenerated.
 - `inbound_messages` is intentionally general enough to build a unified inbox on later without
   a schema change, if that becomes a priority.
 - Nothing from this session touched Stripe/billing/deployment — Day 5 starts clean.
+
+## 2026-09-07 — Session 6 (Day 5 — Stripe billing, entitlements, launch readiness)
+
+Final launch-readiness day per instructions: make LoyalNest production-ready, not larger. User
+was asked upfront (via clarifying questions, since this touches credentials this session
+doesn't have) how to handle two hard external dependencies: **(1) Stripe** — user chose "build
+code only, no live keys," so nothing here was exercised against a real Stripe account, only
+against this codebase's own webhook route with synthetic signed events (Stripe's own
+documented `generateTestHeaderString` testing tool). **(2) Vercel deployment** — user chose to
+deploy via the Vercel dashboard themselves rather than have this session run `vercel login`;
+this session prepared everything (`vercel.json`, exact env var list in README.md) and did not
+attempt a real deploy. Both are recorded as the two genuine remaining gaps, not silently
+assumed done.
+
+### Completed
+
+- Re-read every doc, every migration, and the exact current onboarding/billing/dashboard code
+  before writing anything. Found `plans`/`subscriptions` (Day 1 schema) already had the exact
+  AED 149/299/599 prices and entitlement flags this session's spec asked for — confirmed
+  nothing needed inventing there, only real Stripe wiring and an enforcement layer on top.
+- **Migration 0024** (pushed, types regenerated): `plans.stripe_price_id`,
+  `subscriptions.trial_ends_at`, a widened subscription-status set matching Stripe's real
+  vocabulary, `subscriptions_insert_owner_once` (the first client-facing write policy on
+  `subscriptions` — scoped so an OWNER can only ever create their business's *first*
+  subscription row, at onboarding), and `stripe_webhook_events` (idempotency log, no
+  client-facing policy at all).
+- **Stripe billing** (`services/billing/stripe.ts`, `app/api/webhooks/stripe/route.ts`,
+  `app/dashboard/billing/`): real Checkout session creation, real Customer Portal session
+  creation, a signature-verified/idempotent webhook mapping
+  `checkout.session.completed`/`customer.subscription.{created,updated,deleted}` onto
+  `subscriptions` — same verify-signature-then-resolve-tenant-then-apply-state shape as every
+  other provider webhook this codebase already has. **Real bug caught before it shipped**:
+  the installed `stripe` SDK's own type definitions (`node_modules/stripe`) show
+  `current_period_end` no longer exists on the top-level `Subscription` object in current
+  Stripe API versions — it moved onto each subscription *item* — verified directly against
+  the installed types rather than assumed from training data (exactly the kind of API-shape
+  drift AGENTS.md warns this Next.js version's docs check is for, applied here to a different
+  vendor's SDK on the same principle).
+- **Entitlements** (`lib/entitlements.ts`): one read layer over `plans`+`subscriptions`,
+  enforced server-side at team invites (`max_staff`), location creation (`max_locations` —
+  see below), campaign channel selection, automation enabling (re-checked every scheduled
+  run, not just at save time), and recording a transaction (the trial/billing gate). A
+  `TrialBanner` in the dashboard layout is the visible half; the server-side rejection in each
+  action is the actual enforcement — the banner never gates anything by itself.
+- **Onboarding**: added a plan-selection step (defaults to Growth, 14-day trial, no card) and
+  a lightweight step indicator. Deliberately did *not* rebuild onboarding into a multi-route
+  wizard — one page with a clear plan chooser satisfies "chooses plan or trial" without the
+  added complexity of a literal multi-step flow, consistent with "get live in under 10
+  minutes." Documented scope decision, not an oversight.
+- **Locations**: discovered while reading the existing code that `/dashboard/locations` was
+  read-only — there was no way to add a second location at all, which meant Pro's headline
+  `max_locations` entitlement had nothing to gate. Added the minimum create path
+  (`app/dashboard/locations/actions.ts`), not a general locations-management feature.
+- **Password reset**: `/forgot-password` → `app/auth/confirm/route.ts` (Supabase's
+  `token_hash`+`type`/`verifyOtp` pattern, the documented SSR/App-Router-correct flow — not
+  the default fragment-based redirect, which can't work with a server-side session at all) →
+  `/reset-password`. Custom `supabase/templates/{recovery,confirmation}.html` point Supabase's
+  own emails at this app's own route instead of Supabase's default confirmation-URL redirect.
+  No account-enumeration signal anywhere in the flow (same generic response whether or not an
+  email exists).
+- **Auth production config reviewed, a decision recorded, nothing silently deployed**:
+  `enable_confirmations` stays `false` — a deliberate choice (Supabase's built-in mailer is
+  rate-limited to 2 emails/hour, unsuitable for real volume; flipping it on needs real SMTP
+  configured first), documented directly in `supabase/config.toml` next to the setting, not
+  just in a doc file. `site_url`/`additional_redirect_urls` are still `localhost`, flagged
+  with an explicit `TODO` comment — no production URL exists yet in this environment, and
+  pushing this file with a placeholder URL would have broken every auth email link for real
+  users. **Not pushed to the hosted project** (`supabase config push`) — left for the user to
+  run once they know their real deployment URL, exactly like the deployment itself.
+- **Landing + pricing**: expanded the homepage's feature coverage (added QR/scanner,
+  automations, analytics — previously only 3 of the 7 core-value items the spec named were
+  shown), added a pricing teaser section and a footer with Privacy/Terms links. Built
+  `/pricing` reading `plans` from the database live — no hardcoded prices anywhere in the
+  marketing site, matching the spec's "Keep pricing configurable."
+- **Dashboard overview + analytics**: overview previously had a literal hardcoded `"0"` for
+  "Active campaigns" — replaced with 8 real-data cards (new/returning customers, tracked
+  revenue, transactions, rewards redeemed, active campaigns, automations triggered, all
+  real queries). Analytics was a pure placeholder — rebuilt with 7/30/90-day + custom
+  date-range filters and a real campaign-performance table (sent/delivered/failed per
+  campaign in the selected range). No fabricated charts or trend lines anywhere.
+- **Error boundaries + SEO + legal**: `app/error.tsx`/`global-error.tsx`/`not-found.tsx` (none
+  existed before — production would have shown Next's raw default error UI); `robots.ts`/
+  `sitemap.ts`, Open Graph metadata, dashboard marked `noindex`; `/privacy`/`/terms` with
+  explicit "launch placeholder, not legal advice, requires real review" framing rather than
+  invented legal promises.
+- **Rate limiting** (`lib/rate-limit.ts`): a deliberately simple in-memory fixed-window
+  limiter (per the spec's own "do not overengineer") applied to signup, login,
+  forgot-password, join, invite-signup, and unsubscribe. Documented, accepted limitation:
+  per-process state, not shared across multiple Vercel instances — real webhook endpoints
+  intentionally do NOT use this, since signature verification is the correct control there.
+- **Deployment prep**: `vercel.json` (cron config for the two existing cron-facing routes —
+  documented that Vercel's Hobby plan only allows daily crons, not the configured
+  `*/10 * * * *`/hourly cadence); README.md gained a full "Deploying to production" section
+  (env vars, Stripe Product/Price setup, the auth-config-push step, rollback via Vercel's
+  deployment history). Two real gaps found and fixed in `.env.example` along the way:
+  `RESEND_WEBHOOK_SECRET` and `CRON_SECRET` were both read by existing Day 4 code but never
+  documented there.
+- **Security review pass**: grepped for `dangerouslySetInnerHTML` (none), reviewed every
+  `NEXT_PUBLIC_` usage (all URLs/publishable-style ids, no secrets), confirmed
+  `services/messaging/email-template.ts` already HTML-escapes every customer-supplied value
+  before interpolation (first name, business name, logo URL) — no XSS path found. No new
+  findings required fixing beyond what's already covered by this session's own changes.
+- `npx tsc --noEmit`, `npm run lint`, `npm run build` all pass clean throughout.
+
+### Bugs found and fixed this session
+
+1. **Real bug, caught before ever running**: `Stripe.Subscription` in the installed SDK
+   version has no top-level `current_period_end` — it's per subscription-item now. Would have
+   produced a silently-null renewal date on every real subscription sync. Fixed by reading
+   `subscription.items.data[0].current_period_end` instead, verified against the SDK's own
+   `.d.ts` files.
+2. **Real bug, caught by a failing test before any real usage**: the new
+   `Billing → Manage billing / Choose plan` client buttons initially declared an unused
+   `_state` parameter in their `useActionState` callback (same shape as a Day 4.5 pattern that
+   *does* need the parameter) — ESLint caught it immediately as a genuinely unused variable,
+   not a false positive; fixed by dropping the parameter entirely rather than suppressing the
+   warning.
+3. **Not a bug, a real React 19 lint rule worth recording**: `eslint-plugin-react-hooks`'s
+   "purity" rule flags `Date.now()` (not `new Date()`) called directly in a Server Component's
+   body as an impure call, even outside any hook — hit this in the new dashboard overview and
+   analytics pages. Fixed by computing off `new Date().getTime()` instead, matching the
+   pattern every other page in this codebase already (accidentally) used.
+
+### Live acceptance tests performed (disposable businesses, real HTTP calls against a local `next dev`, cleaned up after)
+
+No real Stripe/Vercel account exists in this environment (by the user's own explicit choice
+this session, not a limitation discovered along the way) — the Stripe tests below are
+correctly-signed *synthetic* events (`stripe.webhooks.generateTestHeaderString`, Stripe's own
+documented tool for exactly this), hitting this codebase's own webhook route for real over
+HTTP. 27/27 checks passed:
+
+- **Subscriptions RLS**: an OWNER can insert their own business's first subscription row
+  (the trial); a second insert for the same business is rejected
+  (`subscriptions_insert_owner_once`); an OWNER cannot insert a subscription for a business
+  they don't own; an OWNER cannot read another business's subscription row at all.
+- **Stripe webhook signature**: an invalid signature is rejected (401) and confirmed to never
+  reach the database (the target row's `stripe_customer_id` stayed `null` afterward).
+- **checkout.session.completed**: correctly links `stripe_customer_id` to the resolved
+  business via `client_reference_id`.
+- **customer.subscription.created/updated**: status correctly mapped (`trialing` → `TRIALING`,
+  `active` → `ACTIVE`), `plan_id` correctly resolved from the subscription item's Stripe Price
+  id (a plan's `stripe_price_id` was temporarily set for this test, then reverted — confirmed
+  reverted to `null` afterward), `current_period_end` correctly read from the item (not the
+  nonexistent top-level field), `cancel_at_period_end` correctly synced.
+- **Idempotency**: delivered an identical event id twice with a manual DB value change in
+  between the two deliveries — the second delivery did NOT re-apply the event (the manually-
+  set value survived), and exactly one `stripe_webhook_events` row exists for that event id
+  despite two POSTs.
+- **customer.subscription.deleted**: forces `CANCELLED` regardless of Stripe's own status
+  string.
+- **Cross-tenant/unresolvable event**: an event carrying a `business_id` with no matching
+  local subscription is acknowledged (200) but never guessed onto a different business's row
+  — confirmed the real test business's row was untouched by it.
+- **Entitlement data correctness**: the final subscription row's plan/status were read back
+  and confirmed exactly as the sequence of events above should have left them.
+
+All test data (2 disposable businesses, 2 disposable auth users, a temporarily-modified plan
+row reverted after) was deleted/reverted immediately after the run; confirmed zero leftover
+rows and a reverted `stripe_price_id` by direct query afterward.
+
+**Not exercised live this session** (all require the two external dependencies the user
+explicitly deferred): Stripe Checkout with a real card, WhatsApp/SMS/Wallet sends (unchanged
+from prior sessions — still no real accounts), the actual entitlement-gated Next.js Server
+Actions through a real browser session (verified by direct code review + `tsc`/build instead
+— Next.js Server Actions use an internal RSC wire protocol that isn't reasonably
+hand-craftable over raw HTTP the way route handlers are; this is a real, honestly-stated gap
+in this session's test coverage, not a claim of having verified it), a real production URL, a
+physical phone's camera against the scanner (this exact limitation was already documented in
+Session 3 and remains true).
+
+### Known edge cases / simplifications
+
+- **Onboarding is still one page**, not a literal multi-step wizard with a route per step —
+  a deliberate scope decision (see "Completed" above), not an oversight.
+- **Rate limiting is in-memory, per-process** — real protection against casual scripted abuse,
+  not a distributed limiter. Acceptable for launch per the spec's own "do not overengineer";
+  revisit with a real store (Upstash/Redis) if abuse is observed at scale.
+- **Entitlement enforcement covers the highest-value action per surface**, not every possible
+  write — e.g. `redeem_reward`/`reverse_transaction`/wallet-token-rotation are intentionally
+  not billing-gated (already-earned customer value, not new usage; "do not destroy data").
+- **Legal pages are structural placeholders**, explicitly marked as requiring real legal
+  review — not a claim of legal compliance.
+- Everything from Day 4.5 (Meta/Twilio webhooks, opt-out, template sync) is unchanged this
+  session.
+
+### External blockers
+
+- **Stripe**: no account/keys in this environment (user's explicit choice this session — see
+  the opening note above). Real Products/Prices, a webhook endpoint registration, and setting
+  `plans.stripe_price_id` are the exact remaining steps — see README.md "Deploying to
+  production."
+- **Vercel deployment**: no login/token in this environment (user's explicit choice). Not
+  attempted. README.md has the exact steps for the user to run themselves.
+- **WhatsApp/SMS/Apple/Google Wallet**: unchanged from every prior session — see
+  `docs/integrations.md`.
+
+### Environment variables
+
+Added to `.env.local` (locally-generated test values, for this session's own Stripe webhook
+signature tests — not real Stripe credentials): `STRIPE_SECRET_KEY` (syntactically-shaped
+placeholder — the webhook route never calls the live Stripe API, only `constructEvent`, which
+only needs the webhook secret), `STRIPE_WEBHOOK_SECRET`. Added to `.env.example`:
+`RESEND_WEBHOOK_SECRET` and `CRON_SECRET` (real gaps found — both were already read by
+existing Day 4 code but never documented), `NEXT_PUBLIC_META_APP_ID`/
+`NEXT_PUBLIC_META_CONFIG_ID`/`META_GRAPH_API_VERSION` (Day 4.5 additions that hadn't made it
+into `.env.example` yet either).
+
+### Database migrations created this session
+
+`0024_stripe_billing` — applied to the remote linked project, types regenerated.
+
+### What comes after this session
+
+- **Deploy to Vercel** (README.md "Deploying to production" has the exact steps) — the one
+  remaining step to turn everything built across all 5 days into a live, testable product.
+- Once deployed: push the auth config (`supabase config push`) with the real production URL,
+  create real Stripe Products/Prices and set `plans.stripe_price_id`, register the Stripe
+  webhook endpoint, and run the full customer/staff/billing flow against the real URL — this
+  is genuinely the first time any of it can be tested end-to-end in a real browser rather than
+  synthetic HTTP calls.
+- Nothing about the architecture blocks that — every provider integration, every entitlement
+  check, and every webhook this session built is real, tested code waiting for real
+  credentials, not a stub.

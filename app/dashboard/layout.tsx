@@ -1,9 +1,19 @@
+import type { Metadata } from "next";
 import { requireBusinessContext } from "@/lib/dal";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
+import { TrialBanner } from "@/components/dashboard/trial-banner";
+import { getEntitlements } from "@/lib/entitlements";
+import { createClient } from "@/lib/supabase/server";
 import { logout } from "./actions";
+
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const membership = await requireBusinessContext();
+  const supabase = await createClient();
+  const entitlements = await getEntitlements(supabase, membership.business_id);
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
@@ -26,7 +36,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
         </form>
       </aside>
 
-      <main className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">{children}</main>
+      <main className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">
+        <TrialBanner entitlements={entitlements} role={membership.role} />
+        {children}
+      </main>
     </div>
   );
 }
