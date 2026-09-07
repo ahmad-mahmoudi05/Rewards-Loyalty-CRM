@@ -58,3 +58,24 @@ export async function sendSms(params: {
     };
   }
 }
+
+/**
+ * Validates Twilio's `X-Twilio-Signature` header against the exact request
+ * URL and POST params — Twilio's own documented method (`twilio.validateRequest`,
+ * re-exported here rather than each call site importing the SDK directly).
+ * Each business has its own Twilio subaccount/authToken (stored in
+ * business_integrations.config, never a single global secret), so the
+ * webhook route must resolve *which* business's authToken to validate
+ * against before calling this — see app/api/webhooks/twilio/route.ts, which
+ * uses the request's own `AccountSid` param to look that up. Validating with
+ * the wrong (or an attacker-guessed) authToken always fails closed.
+ */
+export function validateTwilioSignature(params: {
+  authToken: string;
+  signatureHeader: string | null;
+  url: string;
+  body: Record<string, string>;
+}): boolean {
+  if (!params.signatureHeader) return false;
+  return twilio.validateRequest(params.authToken, params.signatureHeader, params.url, params.body);
+}

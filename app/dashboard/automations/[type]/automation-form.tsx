@@ -96,24 +96,6 @@ export function AutomationForm({ type, automation }: { type: AutomationType; aut
         </>
       )}
 
-      {type === "LOYALTY_EXPIRY_REMINDER" && (
-        <>
-          <p className="rounded-md bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
-            The loyalty engine doesn&apos;t support points/stamps expiration yet, so this
-            automation can be configured but will never actually trigger. See
-            docs/integrations.md.
-          </p>
-          <Field label="Remind before expiry">
-            <select name="reminderDays" defaultValue={(cfg.reminderDays as number) ?? 7} className={inputClass}>
-              <option value={3}>3 days</option>
-              <option value={7}>7 days</option>
-              <option value={14}>14 days</option>
-              <option value={30}>30 days</option>
-            </select>
-          </Field>
-        </>
-      )}
-
       <Field label="Channel">
         <select name="channel" defaultValue={automation?.channel ?? "EMAIL"} className={inputClass}>
           <option value="EMAIL">Email</option>
@@ -188,8 +170,6 @@ function defaultMessage(type: AutomationType) {
       return "{{first_name}}, your {{reward_name}} is ready ☕ Come claim it at {{business_name}}.";
     case "VIP_UPGRADE":
       return "You're officially a {{business_name}} VIP 🎉 Thanks for being one of our best customers.";
-    case "LOYALTY_EXPIRY_REMINDER":
-      return "{{first_name}}, your points expire soon. Visit {{business_name}} and use them before they're gone.";
   }
 }
 

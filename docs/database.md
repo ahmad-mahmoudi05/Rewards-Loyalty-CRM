@@ -18,6 +18,20 @@ reproducible and reviewable.
 | `0007_audit.sql` | `audit_logs` |
 | `0008_rls.sql` | RLS enabled + policies on every table above |
 | `0009_seed_plans.sql` | STARTER/GROWTH/PRO plan catalog |
+| `0010_customer_summary_view.sql` | `customer_summary` read-model view |
+| `0011_loyalty_engine_functions.sql` | `record_transaction`, `redeem_reward`, `reverse_transaction` |
+| `0012_reversal_reward_cancellation.sql` | `reverse_transaction` also cancels an unredeemed reward |
+| `0013_wallet_token_rotation.sql` | `rotate_customer_wallet_token` |
+| `0014_owner_role_guard.sql` | Blocks self-escalation to OWNER on `business_members` |
+| `0015_campaign_status_expansion.sql` | Full campaign/recipient lifecycle statuses, retry bookkeeping |
+| `0016_customer_unsubscribe_token.sql` | `customers.unsubscribe_token` |
+| `0017_business_invitations.sql` | Real invite-then-accept staff flow |
+| `0018_campaign_engine_functions.sql` | Campaign engine RPCs (snapshot/claim/finalize/invite/offer) |
+| `0019_campaign_offers.sql` | Offer fields on `campaigns` + `customer_offers` generation |
+| `0020_retention_automations.sql` | 5-type automation model, `grant_automation_bonus`, `ensure_system_tag` |
+| `0021_customer_summary_unsubscribe_token.sql` | Adds `unsubscribe_token` to `customer_summary` |
+| `0022_provider_webhooks.sql` | `inbound_messages`; template sync columns; removes `LOYALTY_EXPIRY_REMINDER` |
+| `0023_message_templates_upsert_fix.sql` | Fixes a partial-index/`ON CONFLICT` bug found while building template sync |
 
 ## Design choices worth remembering
 
@@ -217,14 +231,9 @@ unwinding a reward that might already be redeemed is a materially bigger problem
   before sending), `VIP_UPGRADE` (dedup by a constant key — fires at most once ever per
   customer per automation, since "trigger on threshold crossing" doesn't need to re-fire on
   every later transaction).
-- **`LOYALTY_EXPIRY_REMINDER` is a documented permanent no-op**: the spec's own instructions
-  allow this ("Only active if business loyalty program uses expiry"), and the loyalty engine
-  (Day 2's `loyalty_programs`/`loyalty_accounts`) has no points/stamps expiration concept at
-  all — no expiry date is ever set on a balance. Retrofitting real expiry into the core
-  loyalty engine is materially bigger than a same-day automation addition should attempt
-  unilaterally. The config UI exists (an owner can enable it), but `evaluateLoyaltyExpiryReminder()`
-  always returns zero matches. Revisit by extending `loyalty_accounts` with an expiry concept
-  if a real business asks for it.
+- **`LOYALTY_EXPIRY_REMINDER` was removed in Day 4.5** (migration `0022`), not shipped as a
+  fifth automation that silently does nothing. See "Day 4.5 additions → Loyalty expiry —
+  deferred, not faked" below for the full reasoning and the concrete post-launch design.
 - **Automation-granted bonus points/stamps use the exact same ledger as staff-recorded
   transactions** (`loyalty_transactions` with `transaction_type = 'BONUS'`) — verified live:
   an inactive-winback bonus showed up in the customer's ledger with a human-readable
@@ -233,6 +242,104 @@ unwinding a reward that might already be redeemed is a materially bigger problem
   deliberate design choice, not an oversight: consent gates being *contacted*, not whether a
   customer *receives* loyalty value they'll see next time they check their own card
   regardless of marketing opt-in status.
+
+## Day 4.5 additions
+
+- `0022_provider_webhooks.sql`:
+  - `inbound_messages` — one generic table for any inbound provider event that isn't a status
+    update on a message this system sent: customer-initiated WhatsApp messages and inbound
+    SMS, including opt-out keyword detection (`is_optout`). Deliberately not split into
+    `whatsapp_events`/`sms_events` — same "one system per capability, not one per channel"
+    rule the campaign engine already follows (`docs/architecture.md`). `business_id`/
+    `customer_id` are nullable (a message can arrive for a `phone_number_id`/`AccountSid` this
+    system doesn't recognize, or from a number with no matching customer) — never dropped
+    silently, always stored, resolved as far as possible. Enough to build a future unified
+    inbox on without building the inbox itself this session. Idempotent on
+    `(channel, provider_message_id)`.
+  - `message_templates` gained `components` (jsonb — the actual template content: header/
+    body/footer/buttons, exactly as Meta returns it) and `last_synced_at`; `status` widened to
+    include `PAUSED`/`DISABLED` (Meta's real template states, not just the four this project
+    invented in Day 1 before real sync existed).
+  - `automation_runs_provider_message_idx` — an expression index on
+    `action_result ->> 'provider_message_id'`. Automation-sent messages don't have a
+    dedicated `provider_message_id` column (it lives inside `action_result`, set by
+    `services/automations/shared.ts::sendAutomationMessage`); this index lets the Meta/Twilio
+    webhooks resolve a status update for an automation-originated send the same way they
+    already do for `campaign_recipients`, without changing a table Day 4 already shipped and
+    tested.
+  - Also removes `LOYALTY_EXPIRY_REMINDER` from `automations.trigger_type` (see below).
+- `0023_message_templates_upsert_fix.sql` — a real bug found immediately while wiring up the
+  template-sync upsert: `message_templates_provider_template_idx` was originally a *partial*
+  unique index (`where provider_template_id is not null`). PostgREST's
+  `upsert(..., { onConflict: "business_id,provider_template_id" })` generates a plain
+  `ON CONFLICT (business_id, provider_template_id)`, and Postgres will only infer a partial
+  index for that if the `ON CONFLICT` clause repeats the exact same predicate — a plain
+  column-list `ON CONFLICT` never matches a partial index, even for rows that satisfy its
+  predicate. Fixed by dropping the predicate entirely: Postgres unique indexes already treat
+  every `NULL` as distinct from every other `NULL` by default, which is the exact same
+  "many un-synced templates, no collision" behavior the partial predicate was trying to
+  express — so nothing was lost by removing it, only a real upsert bug.
+
+### Meta + Twilio webhooks: design
+
+- **Tenant resolution happens from the payload itself, not a URL parameter**: Meta's webhook
+  payload carries `phone_number_id`; Twilio's carries `AccountSid`. Both are looked up against
+  `business_integrations.config` (`.contains()` on the jsonb column) to find the owning
+  business *before* anything else happens. Twilio's signature can only be validated once that
+  business's `authToken` is known — an unrecognized `AccountSid` is rejected outright (404)
+  before any signature check is even attempted, since there's nothing to validate against.
+- **Defense in depth on status updates**: even after a `campaign_recipients`/`automation_runs`
+  row is found by `provider_message_id` (already an unguessable, provider-issued id — a real
+  security boundary on its own), the resolved business from the payload is compared against
+  the found row's own `business_id` before applying any update. A mismatch is silently
+  ignored, never applied across tenants — verified live (see `docs/progress.md`).
+- **Idempotency reuses `message_events`** (Day 4's Resend pattern) for every status update
+  from either provider — `(provider_message_id, event_type)` unique index, `event_type`
+  prefixed per provider (`whatsapp.delivered`, `sms.failed`, ...) so the same message id from
+  two different channels can never collide.
+- **Opt-out is a fixed, conservative word list** (`STOP`, `UNSUBSCRIBE`, `CANCEL`, `END`,
+  `QUIT` — Twilio's own default stop-word list, reused for WhatsApp too for consistency),
+  matched as the *entire* trimmed/uppercased message body (minor trailing punctuation
+  tolerated), never a substring match — "please stop by later" must never opt someone out.
+  Verified live both ways (see `docs/progress.md`).
+
+### Loyalty expiry — deferred, not faked (spec item 5, second path chosen)
+
+`LOYALTY_EXPIRY_REMINDER` is removed from `automations.trigger_type` (migration `0022`) rather
+than shipped as a fifth automation that can never actually fire. Real reasoning, not just "ran
+out of time":
+
+- The Day 2 loyalty engine's `record_transaction`/`redeem_reward` RPCs are already tested,
+  live, and hit on every single scan/redemption — real lot-based expiry (tracking *which*
+  earned amount expires *when*, decrementing lots FIFO on redemption, leaving already-used
+  value alone) means changing the body of both of those functions. That's meaningfully
+  riskier than adding a new, independent webhook route, and this session's actual priority
+  (per the spec) was closing the messaging/provider gaps, not touching the core ledger.
+- `loyalty_transactions.transaction_type` already includes `'EXPIRATION'` (added Day 2,
+  unused until now) — the ledger was designed with this in mind, so the future work below is
+  additive, not a redesign.
+
+**Concrete post-launch design**, so this isn't a vague "someday":
+
+1. Add `loyalty_programs.points_expiry_days` / `stamps_expiry_days` (nullable — `null` means
+   "never expires", preserving today's behavior for every existing program with zero
+   migration risk).
+2. Add a `loyalty_lots` table: one row per `EARN`/`BONUS` `loyalty_transactions` row, with
+   `amount`, `remaining_amount`, `expires_at`. `record_transaction`/`grant_automation_bonus`
+   insert one lot alongside the ledger row they already write.
+3. `redeem_reward` (and the reward-threshold reset inside `record_transaction`) decrement
+   `loyalty_lots.remaining_amount` **FIFO** (oldest `expires_at` first) instead of only
+   touching the aggregate `loyalty_accounts` balance — this is the part that touches
+   already-tested code and needs its own careful test pass.
+4. A new scheduled evaluator (same shape as `/api/automations/run`) finds lots where
+   `expires_at <= now()` and `remaining_amount > 0`, inserts an `EXPIRATION`
+   `loyalty_transactions` row for exactly `remaining_amount`, zeroes the lot, and decrements
+   `loyalty_accounts` by that amount — auditable, never an invisible balance mutation, exactly
+   like every other ledger-driven balance change in this schema.
+5. `LOYALTY_EXPIRY_REMINDER` comes back as a sixth automation type, reading real upcoming-
+   expiry lots (3/7/14/30-day configurable lead time), re-checking `remaining_amount > 0`
+   immediately before sending (same re-check-at-send-time pattern every other automation
+   already uses), deduplicated per lot per lead-time window.
 
 ## Gotcha found during testing: INSERT ... RETURNING re-checks the SELECT policy
 

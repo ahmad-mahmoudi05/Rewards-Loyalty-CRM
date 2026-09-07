@@ -172,6 +172,20 @@ immediate post-send processing, a `/api/campaigns/process` route as the cron-dri
 durability net, and Postgres `FOR UPDATE SKIP LOCKED` for atomic work-claiming. This is the
 same reasoning as Day 1's original queue note, now actually implemented.
 
+## Provider webhooks / tenant resolution (added Day 4.5)
+
+`app/api/webhooks/{resend,meta,twilio}/route.ts` share one shape, deliberately: verify the
+provider's signature over the *raw* body before parsing anything, resolve which business a
+given event belongs to from data *inside the payload itself* (never a URL parameter, which
+would let anyone probe by guessing business ids), record the event idempotently
+(`message_events`/`inbound_messages`, unique on the provider's own event/message id), and only
+then apply any state change — with a second business-id check between the payload's resolved
+tenant and the row actually found, so a status update can never cross tenants even if a
+provider-issued message id were somehow known to an attacker. See `docs/database.md` "Meta +
+Twilio webhooks: design" for the exact per-provider mechanics (Meta: `phone_number_id` →
+business; Twilio: signature can only be validated *after* resolving the business from the
+payload's own `AccountSid`, since each business has its own `authToken`).
+
 ## Repository layout
 
 ```

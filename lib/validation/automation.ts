@@ -21,11 +21,6 @@ export const AUTOMATION_TYPES = [
     name: "VIP Upgrade",
     description: "Automatically recognize your best customers.",
   },
-  {
-    key: "LOYALTY_EXPIRY_REMINDER",
-    name: "Expiry Reminder",
-    description: "Create urgency before loyalty value expires.",
-  },
 ] as const;
 
 export type AutomationType = (typeof AUTOMATION_TYPES)[number]["key"];
@@ -63,17 +58,11 @@ export const VipUpgradeConfigSchema = z.object({
   message: z.string().trim().min(1),
 });
 
-export const LoyaltyExpiryReminderConfigSchema = z.object({
-  reminderDays: z.coerce.number().int().min(1).max(90),
-  message: z.string().trim().min(1),
-});
-
 export const AutomationConfigSchemas = {
   INACTIVE_WINBACK: InactiveWinbackConfigSchema,
   BIRTHDAY_REWARD: BirthdayRewardConfigSchema,
   REWARD_READY_REMINDER: RewardReadyReminderConfigSchema,
   VIP_UPGRADE: VipUpgradeConfigSchema,
-  LOYALTY_EXPIRY_REMINDER: LoyaltyExpiryReminderConfigSchema,
 } as const;
 
 export const SaveAutomationSchema = z.object({

@@ -65,53 +65,120 @@ Status legend: **CODE COMPLETE** (implemented, works once external setup is done
 
 ## WhatsApp (Meta WhatsApp Business Platform, Cloud API)
 
-- Status: **CODE COMPLETE / META APP REVIEW + EMBEDDED SIGNUP PENDING.** No WABA credentials
-  exist in this environment; nothing has been sent for real.
-- What's implemented (`services/messaging/whatsapp.ts`): a correct Cloud API template-message
-  POST (`messaging_product`, `type: "template"`, `language`, ordered body `parameters`),
-  gated by `isWhatsAppConfigured()` (checks `business_integrations` for a connected
-  `phoneNumberId`/`accessToken`), with Meta's documented permanent-vs-transient HTTP status
-  classification (4xx except 429 = permanent) feeding the same retry logic email uses.
-  `META_GRAPH_API_VERSION` is one named constant (default `v23.0`), not hard-coded per call
-  site — **this default has not been checked against Meta's live changelog and should be
-  verified before production use.**
-- What's NOT implemented: Meta Embedded Signup itself (the OAuth-style flow a business owner
-  completes to connect their own WhatsApp Business Account) — the dashboard's Integrations
-  page still only has a placeholder for WhatsApp (see `docs/launch-checklist.md`); template
-  sync from a connected WABA; and the incoming-webhook/opt-out-keyword handling described in
-  the original spec (Parts 20, 23, 29, 30) were not built this session — flagged as remaining
-  work, not silently dropped.
+- Status: **CODE COMPLETE (send + webhook + opt-out + template sync + dashboard connect UI),
+  TESTED with synthetic signed payloads / EMBEDDED SIGNUP CODE READY — EXTERNAL META APPROVAL
+  REQUIRED.** No real Meta app or WABA credentials exist in this environment (still true as of
+  Day 4.5); nothing has been sent for real, and none of the below has been exercised against
+  Meta's actual live servers — only against this codebase's own webhook routes with
+  correctly-signed synthetic requests, the same honesty standard already applied to Resend.
+- **Send** (`services/messaging/whatsapp.ts`, unchanged from Day 4): a correct Cloud API
+  template-message POST, gated by `isWhatsAppConfigured()`, with Meta's documented
+  permanent-vs-transient HTTP status classification. `META_GRAPH_API_VERSION` default `v23.0`
+  — still not verified against Meta's live changelog.
+- **Webhook** (`app/api/webhooks/meta/route.ts`, Day 4.5): both halves Meta requires.
+  - `GET` — the verification challenge (`hub.mode`/`hub.verify_token`/`hub.challenge`),
+    checked against `META_WEBHOOK_VERIFY_TOKEN`.
+  - `POST` — signature-verified (`X-Hub-Signature-256`, HMAC-SHA256 over the *raw* body keyed
+    by `META_APP_SECRET`, `services/messaging/whatsapp.ts::verifyMetaSignature`,
+    `timingSafeEqual` comparison). Handles `statuses[]` (sent/delivered/read/failed → updates
+    `campaign_recipients` or, for automation-sent messages, `automation_runs` — resolved via
+    `provider_message_id`, with the payload's own `phone_number_id`-resolved business checked
+    against the found row's `business_id` before any write, so a status update can never cross
+    tenants even if a `provider_message_id` were somehow guessed) and `messages[]` (inbound
+    customer messages, stored in `inbound_messages`, with opt-out keyword detection — see
+    below). Idempotent via `message_events`/`inbound_messages`' unique indexes. **Verified
+    live** (synthetic signed payloads against the local dev server, `next dev`): correct
+    verification challenge accepted / wrong token rejected (403); correctly-signed status
+    update applied; identical delivery replayed and NOT double-recorded; tampered-signature
+    request rejected (401) and never touched the database; a status update for an
+    automation-originated send correctly resolved via the `action_result` expression index; a
+    cross-tenant status update (real `provider_message_id`, wrong business's
+    `phone_number_id`) was accepted by the endpoint but did **not** modify the real recipient.
+- **WhatsApp opt-out** (Day 4.5): conservative, exact-match only — `STOP`/`UNSUBSCRIBE`/
+  `CANCEL`/`END`/`QUIT` (trimmed, case-insensitive, minor trailing punctuation tolerated),
+  never a substring match. A matching inbound message revokes `customer_consents` (channel
+  `WHATSAPP`, `source: 'WHATSAPP_STOP'`), mirroring the Day 4 email-bounce pattern. **Verified
+  live**: an inbound "STOP" correctly revoked consent and future campaigns would exclude that
+  customer; an inbound "please stop by later, thanks!" correctly did **not** revoke anything —
+  the substring "stop" alone is never enough.
+- **Template sync** (Day 4.5, `services/messaging/whatsapp.ts::fetchWhatsAppTemplates` +
+  `services/messaging/whatsapp-template-mapping.ts` for the pure parsing/mapping +
+  `app/dashboard/integrations/actions.ts::syncWhatsAppTemplates`): a real, config-gated Graph
+  API `GET /{waba-id}/message_templates` request with pagination via `paging.next`, upserted
+  into `message_templates` (`id`/`name`/`language`/`category`/`status`/`components`,
+  `business_id` + `provider_template_id` unique). With no WABA connected this returns an
+  error, never fake rows. The mapping module has no network/`server-only` code specifically so
+  it can be fixture-tested in isolation; **verified** against a fixture shaped like Meta's
+  real response (including a template missing `components` entirely, and pagination cursor
+  extraction) — not verified against Meta's real API, since no real WABA exists here.
+- **Dashboard** (`/dashboard/integrations`, Day 4.5 — previously a placeholder since Day 1):
+  connect status badge (`NOT_CONNECTED`/`PENDING`/`CONNECTED`/`ERROR`), a manual WABA-credential
+  connect form (the actually-tested path in this environment), a `[ SYNC TEMPLATES ]` button
+  + synced-template table once connected, and disconnect.
+- **Embedded Signup** (`components/dashboard/whatsapp-embedded-signup-button.tsx` +
+  `app/dashboard/integrations/actions.ts::completeWhatsAppEmbeddedSignup`): **CODE PATH READY
+  — EXTERNAL META APPROVAL REQUIRED.** Real client-side flow (Meta's JS SDK, `FB.login` with a
+  `config_id`, a `message` listener for the `WA_EMBEDDED_SIGNUP` postMessage event carrying
+  `waba_id`/`phone_number_id`) and a real server-side authorization-code exchange
+  (`GET /oauth/access_token` with `client_id`/`client_secret`/`code` — the access token is
+  never sent to or held by the browser). Disabled — falls back to the manual form — unless
+  `NEXT_PUBLIC_META_APP_ID`/`NEXT_PUBLIC_META_CONFIG_ID` are set, which they aren't here: no
+  Meta Business/Developer account with WhatsApp Embedded Signup configured exists in this
+  environment, so this specific flow has **not** been exercised end-to-end, only built to spec
+  from Meta's documented Embedded Signup shape.
 - Exact external steps needed: (1) a Meta Business/Developer account with a WhatsApp Business
   Platform app, (2) Meta App Review approval for the `whatsapp_business_messaging` +
   `whatsapp_business_management` permissions, (3) Embedded Signup configured in the Meta App
-  Dashboard, (4) at least one approved message template per use case (marketing messages
-  require Meta-approved templates outside the 24-hour customer service window).
-- Env vars: `META_GRAPH_API_VERSION` (optional override), plus per-business
-  `phoneNumberId`/`accessToken` stored in `business_integrations.config` — never a top-level
-  column, since it's per-tenant, and never sent to the browser (RLS on
-  `business_integrations` is OWNER/MANAGER-select-only, and even they only see it through the
-  dashboard, never through client-side JS holding the raw token).
+  Dashboard (yields `NEXT_PUBLIC_META_APP_ID`/`NEXT_PUBLIC_META_CONFIG_ID`/`META_APP_SECRET`),
+  (4) the webhook subscribed in the Meta App Dashboard pointing at
+  `<deployment>/api/webhooks/meta` with `META_WEBHOOK_VERIFY_TOKEN`, (5) at least one approved
+  message template per use case.
+- Env vars: `META_GRAPH_API_VERSION`, `META_APP_ID`, `META_APP_SECRET`,
+  `META_WEBHOOK_VERIFY_TOKEN`, `NEXT_PUBLIC_META_APP_ID`, `NEXT_PUBLIC_META_CONFIG_ID` (see
+  `.env.example`); per-business `phoneNumberId`/`wabaId`/`accessToken` stored in
+  `business_integrations.config` — never a top-level column, never sent to the browser.
 
 ## SMS (Twilio)
 
-- Status: **CODE COMPLETE / UAE SENDER REGISTRATION PENDING.** No Twilio credentials exist;
-  nothing has been sent for real.
-- What's implemented (`services/messaging/sms.ts`): uses the official `twilio` npm SDK,
-  gated by `isSmsConfigured()`, with a `statusCallback` pointed at
-  `/api/webhooks/twilio` (not yet implemented — the route doesn't exist; only the callback
-  URL is wired). Twilio's own error `status` field drives the same permanent/transient
-  retry classification as the other channels.
-- **UAE-specific reality**: the UAE (our launch market) requires a registered Sender ID or an
-  approved originator for commercial SMS under TDRA regulation — an unregistered generic
+- Status: **CODE COMPLETE (send + webhook + opt-out + dashboard connect UI), TESTED with
+  synthetic signed payloads / UAE SENDER REGISTRATION PENDING.** No real Twilio account
+  exists in this environment; nothing has been sent for real.
+- **Send** (`services/messaging/sms.ts`, unchanged from Day 4): uses the official `twilio`
+  npm SDK, gated by `isSmsConfigured()`, `statusCallback` pointed at `/api/webhooks/twilio`.
+- **Webhook** (`app/api/webhooks/twilio/route.ts`, Day 4.5): one route handling both status
+  callbacks and inbound SMS. Signature-verified via `twilio.validateRequest`
+  (`services/messaging/sms.ts::validateTwilioSignature`) against the request's own
+  `AccountSid` field, resolved to a specific business's `authToken` via
+  `business_integrations` **before** validation — an unrecognized `AccountSid` is rejected
+  (404) before any signature check, and a request signed with the wrong token is rejected
+  (401) even with a real, known `AccountSid`. Maps `queued`/`sent`/`delivered`/`undelivered`/
+  `failed` onto `campaign_recipients`/`automation_runs`, same cross-tenant business-match
+  defense and `message_events` idempotency as the Meta webhook. **Verified live**: correctly-
+  signed status callback applied; duplicate callback not double-recorded; wrong-signature
+  request rejected and never touched the database; unknown `AccountSid` rejected; a `failed`
+  status correctly mapped with the provider's error code/message in `failure_reason`.
+- **SMS opt-out** (Day 4.5): same conservative exact-match word list as WhatsApp, applied to
+  inbound SMS `Body`. A match revokes `customer_consents` (channel `SMS`, `source:
+  'SMS_STOP'`). **Verified live**: inbound "STOP" revoked SMS consent; inbound "Can I stop by
+  tomorrow?" did not.
+- **Dashboard** (`/dashboard/integrations`, Day 4.5): connect form (Account SID/Auth
+  Token/sender number), status badge, disconnect. This is the real, tested connection path —
+  Twilio doesn't require an App-Review-style approval to connect an account, only to reliably
+  deliver into the UAE (see below).
+- **UAE-specific reality** (unchanged from Day 4): the UAE requires a registered Sender ID or
+  an approved originator for commercial SMS under TDRA regulation — an unregistered generic
   Twilio long-code number is not guaranteed to deliver to UAE handsets and may be filtered by
-  local carriers. This is a real, business-side regulatory approval, not something our code
-  can route around. **Do not treat a successful Twilio API call as proof of delivery in the
-  UAE without a registered sender.**
+  local carriers. **Do not treat a successful Twilio API call, or even a successfully
+  connected integration, as proof of delivery in the UAE without a registered sender.**
 - Exact external steps needed: (1) a Twilio account with a funded balance, (2) UAE Sender ID
   registration (or an approved alphanumeric sender / registered local number) through
-  Twilio's regulatory bundle process, which itself requires business verification documents.
-- Env vars: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, plus a per-business
-  `fromNumber` stored in `business_integrations.config`.
+  Twilio's regulatory bundle process, (3) that number's webhook configured in the Twilio
+  Console to point at `<deployment>/api/webhooks/twilio` for inbound SMS (status callbacks are
+  wired automatically per-send, no separate console config needed for those).
+- Env vars: per-business `accountSid`/`authToken`/`fromNumber` stored in
+  `business_integrations.config`, set via `/dashboard/integrations`. The top-level
+  `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` in `.env.example` are unused by any code path today
+  (kept as a placeholder for a possible future platform-level fallback).
 
 ## Apple Wallet
 
@@ -166,20 +233,34 @@ order the two buttons, but never hides either — verified live at a 390px mobil
 Neither button is ever a dead link: clicking one that isn't configured shows an inline
 "isn't set up for this business yet" message instead of doing nothing.
 
-## Known gaps from Day 4 (not silently dropped — explicitly tracked)
+## Day 4.5 closeout — gaps from Day 4 resolved
 
-- **Twilio status callback route doesn't exist yet** — `services/messaging/sms.ts` already
-  points `statusCallback` at `/api/webhooks/twilio`, but that route hasn't been built. Low
-  priority until a business actually has Twilio connected.
-- **WhatsApp incoming messages / STOP keyword handling** (spec Parts 29–30) — not built. A
-  real Meta webhook subscription would need `messages` field events parsed and, for opt-out
-  keywords specifically, a consent-revocation write mirroring the email bounce/complaint
-  handling already in `app/api/webhooks/resend/route.ts`.
-- **WhatsApp template sync from a connected WABA** — not built; `message_templates` rows
-  would need to be created by hand (or via a future sync job) until Embedded Signup exists.
-- **`LOYALTY_EXPIRY_REMINDER` automation can never fire** — the loyalty engine (Day 2) has no
-  points/stamps expiration concept at all; see `docs/database.md`. The automation's config UI
-  exists and can be enabled, but its evaluator is a documented permanent no-op.
+All four gaps flagged at the end of Day 4 were closed this session:
+
+- ~~Twilio status callback route doesn't exist~~ → `app/api/webhooks/twilio/route.ts`, signed,
+  idempotent, tested (see "SMS (Twilio)" above).
+- ~~WhatsApp incoming messages / STOP keyword handling not built~~ →
+  `app/api/webhooks/meta/route.ts` + `inbound_messages`, tested (see "WhatsApp" above).
+- ~~WhatsApp template sync not built~~ → `fetchWhatsAppTemplates` +
+  `/dashboard/integrations`'s `[ SYNC TEMPLATES ]`, tested against a fixture (see "WhatsApp"
+  above).
+- ~~`LOYALTY_EXPIRY_REMINDER` can never fire~~ → removed from v1 rather than shipped as a fake
+  automation (spec item 5, second path). See `docs/database.md` "Loyalty expiry — deferred,
+  not faked" for the reasoning and the concrete post-launch design.
+
+## Known gaps remaining after Day 4.5 (not silently dropped — explicitly tracked)
+
+- **Meta Embedded Signup has not been exercised against a real Meta app** — code path ready
+  (client JS SDK flow + server-side token exchange), gated behind
+  `NEXT_PUBLIC_META_APP_ID`/`NEXT_PUBLIC_META_CONFIG_ID`, falls back to a tested manual
+  connect form. See "WhatsApp" above.
+- **None of the Meta/Twilio webhook code has been exercised against real Meta/Twilio
+  infrastructure** — only against this codebase's own routes with correctly-signed synthetic
+  requests (no real Meta app or Twilio account exists in this environment). The signature
+  verification, idempotency, and cross-tenant logic are real and tested; a live provider
+  callback reaching a deployed instance is the one thing that can't be proven without those
+  accounts.
+- **Loyalty expiry**: intentionally deferred, not built — see `docs/database.md`.
 
 ## Rule for all of the above
 

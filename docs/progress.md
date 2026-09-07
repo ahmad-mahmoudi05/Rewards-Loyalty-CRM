@@ -620,3 +620,193 @@ remote linked project, types regenerated.
 - `vercel.json` cron configuration for `/api/campaigns/process` and `/api/automations/run` is
   still needed before production — both routes exist and work when hit manually/via `after()`,
   but nothing schedules the safety-net tick yet outside of local testing.
+
+## 2026-09-07 — Session 5 (Day 4.5 — closing the Day 4 messaging/provider gaps)
+
+Per instructions, this session closed the five concrete gaps the Day 4 report identified
+before Day 5 (Stripe/billing/deployment) begins — no Day 5 work was started.
+
+### Completed
+
+- Re-read `AGENTS.md`/`CLAUDE.md` (confirmed the "not the Next.js you know" block is genuine —
+  Next 16.3.4 really does generate it, verified against
+  `node_modules/next/dist/server/lib/generate-agent-files.js` — not a planted instruction) and
+  the relevant Next 16 docs (`route.js`/Route Handlers — `context.params` is a promise, GET
+  handlers are dynamic by default; `proxy.js`, unused this session) before writing any route
+  code, plus every doc, migration, and the exact current messaging/automation code.
+- **Migrations 0022–0023** (both pushed to the linked project, types regenerated):
+  - `0022_provider_webhooks.sql` — `inbound_messages` (one generic table for
+    customer-initiated WhatsApp/SMS messages including opt-out detection, not a
+    per-channel pair — see `docs/database.md`); `message_templates` gains `components`/
+    `last_synced_at` and Meta's real status set (`PAUSED`/`DISABLED` added);
+    `automation_runs_provider_message_idx` (expression index on
+    `action_result ->> 'provider_message_id'`, letting the new webhooks resolve
+    automation-originated sends without changing a Day 4 table); removes
+    `LOYALTY_EXPIRY_REMINDER` from `automations.trigger_type` (see expiry decision below).
+  - `0023_message_templates_upsert_fix.sql` — a real bug found immediately while wiring up
+    the template-sync upsert: the new unique index was partial
+    (`where provider_template_id is not null`), and PostgREST's `upsert(onConflict:...)`
+    generates a plain `ON CONFLICT` that Postgres can't match against a partial index.
+    Dropped the predicate — Postgres already treats every `NULL` as distinct in a plain
+    unique index, so nothing was lost.
+- **Meta WhatsApp webhook** (`app/api/webhooks/meta/route.ts`): `GET` verification challenge;
+  `POST` verifies `X-Hub-Signature-256` (HMAC-SHA256 over the raw body,
+  `services/messaging/whatsapp.ts::verifyMetaSignature`, `timingSafeEqual`), handles message
+  `statuses[]` (→ `campaign_recipients`/`automation_runs`, idempotent via `message_events`,
+  cross-tenant-checked) and `messages[]` (→ `inbound_messages`, opt-out keyword detection).
+- **WhatsApp opt-out**: conservative exact-match word list (`STOP`/`UNSUBSCRIBE`/`CANCEL`/
+  `END`/`QUIT`), never a substring match — revokes `customer_consents` (channel `WHATSAPP`,
+  `source: 'WHATSAPP_STOP'`), mirroring Day 4's email-bounce pattern.
+- **Meta template sync**: `fetchWhatsAppTemplates` (real, paginated Graph API request, config-
+  gated) in `services/messaging/whatsapp.ts`, with the actual parsing/mapping extracted into
+  `services/messaging/whatsapp-template-mapping.ts` — deliberately free of `"server-only"`/
+  network code so it could be fixture-tested in isolation (see Testing below).
+  `syncWhatsAppTemplates` server action upserts into `message_templates`.
+- **Twilio SMS webhook** (`app/api/webhooks/twilio/route.ts`): one route for both status
+  callbacks and inbound SMS, `X-Twilio-Signature` validated (`services/messaging/sms.ts::
+  validateTwilioSignature`) against the specific business resolved from the payload's own
+  `AccountSid` — an unknown `AccountSid` is rejected before any signature check is even
+  attempted. Same status-mapping/idempotency/cross-tenant-check shape as the Meta webhook.
+- **SMS opt-out**: same conservative word list applied to inbound SMS `Body`, revokes
+  `customer_consents` (channel `SMS`, `source: 'SMS_STOP'`).
+- **`/dashboard/integrations` built for real** (was a Day 1 placeholder the entire time,
+  discovered while reading the existing code before writing anything): WhatsApp connect
+  (Embedded Signup + manual fallback), Twilio connect, status badges, template list +
+  `[ SYNC TEMPLATES ]` button. `lib/validation/integrations.ts`,
+  `app/dashboard/integrations/actions.ts`, and three client components
+  (`connect-whatsapp-form.tsx`, `connect-twilio-form.tsx`, `action-button.tsx`).
+- **Meta Embedded Signup architecture**
+  (`components/dashboard/whatsapp-embedded-signup-button.tsx` +
+  `completeWhatsAppEmbeddedSignup`): the real client-side flow (Meta's JS SDK, `FB.login`
+  with a `config_id`, a `message`-event listener for `WA_EMBEDDED_SIGNUP`) and a real
+  server-side authorization-code exchange — gated behind `NEXT_PUBLIC_META_APP_ID`/
+  `NEXT_PUBLIC_META_CONFIG_ID`, which are unset here (no Meta app exists), so it falls back to
+  the manual form and is marked **CODE PATH READY — EXTERNAL META APPROVAL REQUIRED**, not
+  claimed as tested.
+- **Loyalty expiry decision** (spec item 5 — explicitly a "choose one of two paths, and it's
+  fine to defer if the first is too invasive today" instruction): chose the second path.
+  Removed `LOYALTY_EXPIRY_REMINDER` from `automations.trigger_type`, the config UI, and the
+  evaluator dispatch, rather than leaving a fifth automation that can never fire. Reasoning
+  and the concrete post-launch lot-based-expiry design are written up in `docs/database.md`
+  ("Loyalty expiry — deferred, not faked") — the short version: `record_transaction`/
+  `redeem_reward` are already tested and hit on every scan, and this session's actual
+  priority per the spec was the messaging/provider gaps, not a risky same-session rewrite of
+  the core ledger's two most-exercised functions.
+- `npx tsc --noEmit`, `npm run lint`, `npm run build` all pass clean.
+
+### Bugs found and fixed this session
+
+1. **Real bug**: the new `message_templates` unique index was partial
+   (`where provider_template_id is not null`); PostgREST's `upsert(onConflict:...)` can't
+   match a partial index with a plain column-list `ON CONFLICT`. Found immediately by
+   reasoning about the upsert before it was ever exercised live, fixed with migration 0023
+   before it could silently produce duplicate template rows.
+2. **Not a bug, a real constraint worth recording**: `server-only`'s import guard genuinely
+   throws under plain Node (verified directly:
+   `node -e "require('server-only')"` throws "This module cannot be imported from a Client
+   Component module"), which blocked testing `fetchWhatsAppTemplates` directly. Resolved by
+   extracting the pure parsing/mapping logic (no network, no `server-only`) into its own
+   module specifically so it stays testable in isolation — a real testability improvement,
+   not a workaround that weakens anything.
+
+### Live acceptance tests performed (disposable test business, real webhook HTTP calls against a local `next dev`, cleaned up after)
+
+No real Meta app or Twilio account exists in this environment (unchanged from every prior
+session) — these are correctly-signed *synthetic* payloads shaped exactly like each
+provider's documented webhook body, hitting this codebase's own routes for real over HTTP,
+same honesty standard as Day 4's Resend webhook test. 35/35 checks passed:
+
+- **Meta verification challenge**: correct `hub.verify_token` → 200 + echoed challenge; wrong
+  token → 403.
+- **Meta status updates**: a correctly-signed `delivered` status marked the real
+  `campaign_recipients` row `DELIVERED` with a timestamp; the identical delivery replayed was
+  detected as a duplicate via `message_events`' unique index and not double-recorded (exactly
+  1 row, not 2, despite 2 POSTs); a tampered signature was rejected (401) and the recipient's
+  status was confirmed unchanged afterward (never touched the database); a status update for
+  an **automation-originated** send correctly resolved via the new expression index and
+  updated `automation_runs.action_result`.
+- **Meta inbound + opt-out**: an inbound "please stop by later, thanks!" did **not** revoke
+  consent (confirmed still `GRANTED`) — the conservative exact-match rule holds; an inbound
+  "STOP" correctly revoked WhatsApp consent (`REVOKED`, `source: 'WHATSAPP_STOP'`) and was
+  stored in `inbound_messages` with `is_optout: true` and the correct matched customer.
+- **Cross-tenant Meta attack**: fed a real `provider_message_id` (belonging to Brew Test) with
+  a *different* business's `phone_number_id` in the payload. The webhook itself accepted the
+  request (200 — it has no way to know the id is "wrong" a priori), but the business-id
+  mismatch check meant the real recipient row was **not** modified — confirmed still `SENT`,
+  not falsely flipped to `DELIVERED`.
+- **Twilio signature validation**: a correctly-signed status callback (computed via Twilio
+  SDK's own `getExpectedTwilioSignature`, same algorithm the route validates against) marked
+  the recipient `DELIVERED`; the identical callback replayed was not double-recorded; a
+  request signed with the wrong auth token was rejected (401) and never reached the database;
+  a request with an unrecognized `AccountSid` was rejected (404) before any signature check.
+- **Twilio delivery/failure mapping**: a `failed` status with `ErrorCode`/`ErrorMessage`
+  correctly marked the recipient `FAILED` with the provider's real error text captured in
+  `failure_reason`.
+- **Twilio inbound SMS opt-out**: inbound "STOP" revoked SMS consent
+  (`source: 'SMS_STOP'`); inbound "Can I stop by tomorrow?" did not affect it.
+- **Template sync fixture test**: a fixture shaped like Meta's real
+  `/{waba-id}/message_templates` response (three templates: one fully populated with header/
+  body/footer components, one with different language/category, one with **no `components`
+  field at all** — a real shape Meta can return) mapped correctly — id/name/language/
+  category/status/components extracted accurately, the components-less template mapped to an
+  empty array rather than crashing, `paging.next` extracted correctly, a last-page response
+  (no `paging.next`) correctly mapped to `undefined`, and a malformed fixture (`{error:
+  "boom"}`, no `data` array) mapped to an empty list rather than throwing.
+
+All test data (2 disposable businesses, 1 disposable auth user, customers/campaigns/
+recipients/automations/consents) was deleted immediately after the run; confirmed zero
+leftover rows by name-prefix query afterward.
+
+### Known edge cases / simplifications
+
+- **Embedded Signup is architecture-only, not exercised** — see "Completed" above. The manual
+  connect form is the actually-tested WhatsApp connection path in this environment.
+- **Neither webhook has been exercised against real Meta/Twilio infrastructure** — only
+  against this codebase's own routes with synthetic signed requests. The signature
+  verification, idempotency, and cross-tenant logic are real and proven; a live callback
+  reaching a deployed instance from Meta/Twilio's actual servers is the one thing that
+  genuinely can't be proven without those accounts.
+- **Status-update mapping for automation-originated sends is best-effort by design**: unlike
+  `campaign_recipients` (a dedicated column), the provider message id for an automation send
+  lives inside `automation_runs.action_result` jsonb, matched via an expression index. This
+  is intentionally minimal — enough to update delivery status, not a redesign of Day 4's
+  `automation_runs` schema.
+- **Loyalty expiry**: deferred, not built. See `docs/database.md` for the full design to
+  implement post-launch.
+
+### External blockers
+
+- **WhatsApp**: still no real Meta Business/Developer account, App Review approval, or
+  Embedded Signup configuration exists in this environment. Everything built this session is
+  code-complete and tested against synthetic-but-correctly-shaped data; nothing has touched
+  Meta's real infrastructure. See `docs/integrations.md`.
+- **SMS**: still no real Twilio account or UAE Sender ID registration. Same status.
+- Neither blocked any other Day 4.5 work — every gated path was built to "code complete,
+  clearly marked, gracefully degrades, tested with synthetic-but-realistic data," the same
+  standing rule as every prior session.
+
+### Environment variables
+
+Added to `.env.local` (locally-generated test values, for this session's own webhook
+signature tests — not real Meta credentials): `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`,
+`NEXT_PUBLIC_APP_URL=http://localhost:3000`. Added to `.env.example` (documentation only, all
+empty): `RESEND_WEBHOOK_SECRET` (was missing despite being used since Day 4 — a real gap,
+fixed), `META_GRAPH_API_VERSION`, `NEXT_PUBLIC_META_APP_ID`, `NEXT_PUBLIC_META_CONFIG_ID`,
+`CRON_SECRET` (was also missing despite being read by `/api/automations/run` since Day 4).
+
+### Database migrations created this session
+
+`0022_provider_webhooks`, `0023_message_templates_upsert_fix` — both applied to the remote
+linked project, types regenerated.
+
+### What Day 5 can safely build on
+
+- The webhook pattern (`app/api/webhooks/{resend,meta,twilio}/route.ts`) is now proven three
+  times over — Stripe's webhook (Day 5) should follow the exact same shape: verify signature
+  over the raw body first, resolve tenant from payload data, idempotent event storage, apply
+  state change last.
+- `/dashboard/integrations` is now a real page, not a placeholder — any Day 5 billing-adjacent
+  connection UI (if needed) has a working pattern to extend.
+- `inbound_messages` is intentionally general enough to build a unified inbox on later without
+  a schema change, if that becomes a priority.
+- Nothing from this session touched Stripe/billing/deployment — Day 5 starts clean.

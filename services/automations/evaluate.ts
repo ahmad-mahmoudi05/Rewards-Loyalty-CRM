@@ -328,17 +328,3 @@ export async function evaluateVipUpgrade(
 
   return result;
 }
-
-/**
- * LOYALTY_EXPIRY_REMINDER: the config UI exists (owners can create and
- * enable this automation), but it can never actually fire — the loyalty
- * engine (Day 2) has no points/stamps expiration concept at all
- * (loyalty_accounts never sets an expiry date). Retrofitting real expiry
- * into the core loyalty engine is a materially bigger change than a same-day
- * automation addition should make unilaterally. Documented in
- * docs/database.md; this function is an intentional, permanent no-op until
- * that schema work happens.
- */
-export async function evaluateLoyaltyExpiryReminder(): Promise<EvaluationResult> {
-  return EMPTY;
-}

@@ -873,6 +873,70 @@ export type Database = {
           },
         ]
       }
+      inbound_messages: {
+        Row: {
+          body: string | null
+          business_id: string | null
+          channel: string
+          created_at: string
+          customer_id: string | null
+          from_address: string
+          id: string
+          is_optout: boolean
+          provider_message_id: string | null
+          raw_payload: Json
+          to_address: string | null
+        }
+        Insert: {
+          body?: string | null
+          business_id?: string | null
+          channel: string
+          created_at?: string
+          customer_id?: string | null
+          from_address: string
+          id?: string
+          is_optout?: boolean
+          provider_message_id?: string | null
+          raw_payload?: Json
+          to_address?: string | null
+        }
+        Update: {
+          body?: string | null
+          business_id?: string | null
+          channel?: string
+          created_at?: string
+          customer_id?: string | null
+          from_address?: string
+          id?: string
+          is_optout?: boolean
+          provider_message_id?: string | null
+          raw_payload?: Json
+          to_address?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inbound_messages_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inbound_messages_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_summary"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inbound_messages_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       locations: {
         Row: {
           address: string | null
@@ -1213,10 +1277,12 @@ export type Database = {
           business_id: string
           category: string | null
           channel: string
+          components: Json
           content: string
           created_at: string
           id: string
           language: string
+          last_synced_at: string | null
           name: string
           provider_template_id: string | null
           status: string
@@ -1226,10 +1292,12 @@ export type Database = {
           business_id: string
           category?: string | null
           channel: string
+          components?: Json
           content: string
           created_at?: string
           id?: string
           language?: string
+          last_synced_at?: string | null
           name: string
           provider_template_id?: string | null
           status?: string
@@ -1239,10 +1307,12 @@ export type Database = {
           business_id?: string
           category?: string | null
           channel?: string
+          components?: Json
           content?: string
           created_at?: string
           id?: string
           language?: string
+          last_synced_at?: string | null
           name?: string
           provider_template_id?: string | null
           status?: string

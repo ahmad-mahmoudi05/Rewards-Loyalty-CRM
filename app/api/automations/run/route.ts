@@ -5,7 +5,6 @@ import {
   evaluateBirthdayReward,
   evaluateRewardReadyReminder,
   evaluateVipUpgrade,
-  evaluateLoyaltyExpiryReminder,
 } from "@/services/automations/evaluate";
 
 const EVALUATORS = {
@@ -13,7 +12,6 @@ const EVALUATORS = {
   BIRTHDAY_REWARD: evaluateBirthdayReward,
   REWARD_READY_REMINDER: evaluateRewardReadyReminder,
   VIP_UPGRADE: evaluateVipUpgrade,
-  LOYALTY_EXPIRY_REMINDER: evaluateLoyaltyExpiryReminder,
 } as const;
 
 /**

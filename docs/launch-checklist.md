@@ -141,6 +141,46 @@ second scheduler run produced zero duplicates; the same real dedup behavior was 
 verified for birthday, reward-ready, and VIP automations. Cross-tenant campaign injection
 (a forged customer id from a second business) was silently excluded, not leaked.
 
+## Day 4.5 — Close Day 4 messaging/provider gaps ✅ complete, verified live
+
+- [x] Meta WhatsApp webhook (`app/api/webhooks/meta/route.ts`): verification challenge,
+      `X-Hub-Signature-256` HMAC validation, message status updates (sent/delivered/read/
+      failed) mapped onto `campaign_recipients`/`automation_runs`, inbound message storage
+      (`inbound_messages`), idempotent on both status events and inbound messages
+- [x] WhatsApp opt-out: conservative exact-match STOP/UNSUBSCRIBE/CANCEL/END/QUIT detection on
+      inbound messages, revokes `customer_consents` — verified NOT to trigger on ordinary text
+      containing "stop"
+- [x] Meta template synchronization: real Graph API request path (`fetchWhatsAppTemplates`),
+      `[ SYNC TEMPLATES ]` button on `/dashboard/integrations`, mapping tested against a
+      realistic fixture (including a template missing `components`)
+- [x] Twilio SMS webhook (`app/api/webhooks/twilio/route.ts`): `X-Twilio-Signature` validation
+      resolved per-business via the payload's own `AccountSid`, status callback mapping
+      (queued/sent/delivered/undelivered/failed), inbound SMS storage + STOP opt-out
+- [x] `/dashboard/integrations` built for real (was a Day 1 placeholder until now): WhatsApp
+      connect (Embedded Signup — code ready, external approval required — falling back to a
+      tested manual credential form) + SMS/Twilio connect, status badges, template list
+- [x] Meta Embedded Signup architecture: real client JS-SDK flow + server-side token exchange,
+      gated behind `NEXT_PUBLIC_META_APP_ID`/`NEXT_PUBLIC_META_CONFIG_ID` — CODE PATH READY,
+      EXTERNAL META APPROVAL REQUIRED, not exercised against a real Meta app
+- [x] Loyalty expiry decision: **removed `LOYALTY_EXPIRY_REMINDER` from v1** (second path —
+      four real automations, not five where one is fake) rather than retrofitting lot-based
+      expiry into the already-tested Day 2 loyalty engine mid-session. Concrete post-launch
+      design written up in `docs/database.md`.
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm run build` all pass clean
+
+**Day 4.5 acceptance test**: ✅ **Verified live** with a disposable test business/customer and
+correctly-signed synthetic provider payloads (no real Meta app or Twilio account exists in
+this environment — see `docs/integrations.md`). 35/35 checks passed, covering: Meta webhook
+verification (correct token accepted, wrong token rejected); a correctly-signed status update
+applied and an identical replay NOT double-recorded; a tampered signature rejected (401) and
+never reaching the database; a status update for an automation-originated send resolved
+correctly; a cross-tenant status update accepted by the endpoint but NOT applied to the real
+recipient (business-id mismatch defense); WhatsApp STOP revoking consent while "please stop by
+later" did not; the identical set of checks for Twilio (signature validation, duplicate-
+callback idempotency, unknown-`AccountSid` rejection, failure-reason mapping, inbound SMS
+STOP); and template-fixture mapping (correct field extraction, an empty-`components` template
+handled without crashing, pagination cursor extraction). All test data cleaned up after.
+
 ## Day 5 — Billing + analytics + polish + production
 
 - [ ] Revisit `supabase/config.toml` `[auth]` section deliberately for production (re-enable

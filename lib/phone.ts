@@ -29,3 +29,16 @@ export function normalizePhone(raw: string, defaultCountry: "AE" = "AE"): Normal
     throw error;
   }
 }
+
+/**
+ * WhatsApp's Cloud API sends `wa_id`/`from` as bare digits with no leading
+ * `+` (e.g. "971501234567"), unlike everywhere else in this codebase where
+ * phone numbers already carry one. Prepending `+` before normalizing is
+ * enough to match the E.164 form customers.phone_normalized already stores
+ * (see lib/validation/join.ts) — no separate identity scheme needed.
+ */
+export function normalizeWhatsAppId(waId: string): NormalizedPhone {
+  const digitsOnly = waId.trim().replace(/[^\d]/g, "");
+  if (!digitsOnly) return { valid: false, error: "Empty WhatsApp id." };
+  return normalizePhone(`+${digitsOnly}`);
+}

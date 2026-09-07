@@ -1,5 +1,7 @@
 import "server-only";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { ProviderNotConnectedError, type SendMessageResult } from "./types";
+import { mapMetaTemplatesPage, nextPageUrl, type MetaTemplate } from "./whatsapp-template-mapping";
 
 /**
  * Meta WhatsApp Business Platform, Cloud API. CODE COMPLETE / META APP REVIEW
@@ -92,4 +94,63 @@ export async function sendWhatsAppTemplate(params: {
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Network error.", permanent: false };
   }
+}
+
+/**
+ * Verifies Meta's `X-Hub-Signature-256` header (`sha256=<hex hmac>` over the
+ * *raw* request body, keyed by the app secret — Meta's documented webhook
+ * signing method, same shape as every Graph API webhook, not just
+ * WhatsApp). Must run against the raw body text, before JSON.parse, exactly
+ * like the Resend/svix verification in app/api/webhooks/resend/route.ts.
+ * `timingSafeEqual` avoids a timing side-channel on the comparison; lengths
+ * are checked first since `timingSafeEqual` throws on mismatched buffer
+ * lengths rather than returning false.
+ */
+export function verifyMetaSignature(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
+  if (!signatureHeader?.startsWith("sha256=")) return false;
+  const expected = createHmac("sha256", appSecret).update(rawBody, "utf8").digest("hex");
+  const provided = signatureHeader.slice("sha256=".length);
+  const expectedBuf = Buffer.from(expected, "hex");
+  const providedBuf = Buffer.from(provided, "hex");
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return timingSafeEqual(expectedBuf, providedBuf);
+}
+
+export type { MetaTemplate, MetaTemplateComponent } from "./whatsapp-template-mapping";
+
+/**
+ * Fetches every message template on a connected WABA. Real request path,
+ * config-gated exactly like sendWhatsAppTemplate — with no credentials this
+ * throws ProviderNotConnectedError rather than returning fake data (Part:
+ * "do not fake successful synchronization"). Paginates via Meta's
+ * `paging.next` cursor URL; capped at 20 pages (2000 templates at the
+ * default page size) as a sane worst-case bound, not a real-world limit.
+ * The actual parsing/mapping is in whatsapp-template-mapping.ts, kept free
+ * of "server-only"/network code specifically so it can be exercised with a
+ * fixture in isolation — see scripts/tmp-day45-webhook-test.mjs.
+ */
+export async function fetchWhatsAppTemplates(
+  config: Partial<WhatsAppIntegrationConfig> | null | undefined
+): Promise<MetaTemplate[]> {
+  if (!isWhatsAppConfigured(config) || !config.wabaId) {
+    throw new ProviderNotConnectedError("WHATSAPP");
+  }
+
+  const templates: MetaTemplate[] = [];
+  let url: string | undefined =
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${config.wabaId}/message_templates?fields=id,name,language,category,status,components&limit=100`;
+
+  for (let page = 0; url && page < 20; page++) {
+    const res: Response = await fetch(url, {
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      throw new Error(body?.error?.message ?? `Meta template sync failed with HTTP ${res.status}`);
+    }
+    templates.push(...mapMetaTemplatesPage(body));
+    url = nextPageUrl(body);
+  }
+
+  return templates;
 }

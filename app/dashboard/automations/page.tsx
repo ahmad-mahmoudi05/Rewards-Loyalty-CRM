@@ -14,8 +14,6 @@ function summarizeConfig(type: string, config: Record<string, unknown> | null): 
       return config.delayDays === 0 ? "Immediately when earned" : `${config.delayDays} day(s) after earned`;
     case "VIP_UPGRADE":
       return `${config.criteria === "TOTAL_SPEND" ? "Spend" : "Visits"} ≥ ${config.threshold}`;
-    case "LOYALTY_EXPIRY_REMINDER":
-      return `${config.reminderDays} day(s) before expiry`;
     default:
       return "";
   }
