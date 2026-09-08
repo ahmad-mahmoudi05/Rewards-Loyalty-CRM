@@ -1237,3 +1237,82 @@ already documented in README.md "Deploying to production" — connect Vercel, se
 (including the now-required `CRON_SECRET`), push the Supabase auth config with the real
 production URL, create real Stripe Products/Prices, and run the full customer/staff/billing
 flow against a real URL for the first time.
+
+## 2026-09-09 — Session 9 (production UX + performance fix pass)
+
+Focused, non-feature pass fixing four issues observed on the live Vercel deployment: unreadable
+native `<select>` options, missing loading feedback on some actions, inconsistent pointer-cursor
+affordance, and slow (~4s reported) sidebar navigation.
+
+**Dropdown fix**: `app/globals.css` had no `color-scheme` declared, so Chromium rendered a
+`<select>`'s open option-list popup with light-mode defaults (white background) while the page's
+own dark-mode CSS gave the `<select>` light text via inheritance — light-on-light, nearly
+invisible. Fixed with `color-scheme: light` / `dark` (matching the existing media-query split),
+plus an explicit `select { background-color/color: var(...) }` rule as a defense-in-depth for
+Safari's closed-control inheritance quirks. Applies globally to all 11 native selects across the
+app (onboarding, settings, branding, automations, campaigns, team, loyalty, scanner) — no
+per-field patches needed.
+
+**Cursor fix**: Tailwind v4's Preflight reset doesn't set `cursor: pointer` on `<button>`. Fixed
+with one global rule in `app/globals.css` (`button:not(:disabled), [role="button"], a[href]`),
+plus a matching `cursor: not-allowed` for the disabled case — applies automatically to every
+current and future button/link, no per-component classes added.
+
+**Loading states**: an inventory (dispatched as a background audit) found the codebase already
+uses `useActionState` + pending/disabled/label-swap consistently on essentially every mutation —
+only 3 real gaps: the logout button (plain form, zero feedback — now `components/dashboard/
+logout-button.tsx`), the copy-signup-link button (no pending state during the clipboard write),
+and the reverse-transaction confirm button (pending label was a bare "…", changed to
+"Reversing…"). Added 14 `app/dashboard/*/loading.tsx` route-level Suspense boundaries (none
+existed before) — each navigation now shows an immediate skeleton in the content area while the
+sidebar/layout (already mounted) stays visible, rather than a frozen previous page.
+
+**Sidebar performance — root cause, measured, not guessed**: instrumented `proxy.ts`,
+`lib/dal.ts`, and `lib/entitlements.ts` with temporary timing, ran real requests (real signed-in
+session cookies obtained via `@supabase/ssr` against a disposable test business) against a local
+`next dev`/`next start` server pointed at the same linked Supabase project every other session
+this week has used. Per-navigation cost breaks down to: `proxy.ts`'s `getUser()` (~210ms, a real
+network round trip to Supabase Auth — required, since middleware needs a server-verified check,
+not a locally-decoded one), `lib/dal.ts`'s `getUser()` in the RSC render (~230ms, the authoritative
+check `docs/architecture.md` describes as the actual security boundary), the membership+business
+query (~110-220ms), and — this was the fixable bug — a **second, separate** `getEntitlements()`
+DB query every request, uncached, sometimes called *twice* per single navigation
+(`/dashboard/billing`, `/dashboard/locations` call it directly in addition to the shared layout).
+
+Found and fixed a real, unrelated correctness bug in the same code while diagnosing this:
+`subscriptions_select_owner` RLS restricts reading `subscriptions` to the business's OWNER only,
+but `getEntitlements()` was being called with the authenticated (RLS-scoped) client from places
+open to MANAGER/STAFF — including `recordTransaction`, which STAFF are supposed to be able to do.
+Verified live: a real STAFF session reading `subscriptions` got `{data: null, error: null}` for a
+business with a genuinely active TRIALING subscription, meaning `getEntitlements()` silently fell
+back to the most-restrictive "no subscription" state and `billingGateMessage()` blocked the
+action — **STAFF could not record a transaction at all**, on any plan, regardless of trial state.
+Fixed by having `getEntitlements(businessId)` use a service-role client internally (the
+`businessId` is always already tenant-validated by the caller, so this doesn't create a
+cross-tenant path) and wrapping it in `React.cache()` (request-scoped only, matches the existing
+`lib/dal.ts` pattern, cannot leak across users/tenants) — this also fixed the double-query case,
+since `cache()` now dedupes correctly by `businessId` instead of by a fresh, never-matching
+`supabase` client instance per call site. Also removed one genuinely redundant `getUser()` call
+inside `getCurrentBusinessMembership()` by reusing the already-`cache()`-wrapped `getCurrentUser()`.
+
+Measured before/after (local `next start`, warm requests, same test business): dashboard route
+responses went from ~700-1000ms to ~630-850ms — a real but modest reduction from the query-level
+fixes. **Could not reproduce the reported ~4 seconds locally in either dev or production mode** —
+worst case seen was ~1.8s, a dev-mode Turbopack JIT-compile artifact on the very first hit to a
+route, not present in `next start`. The two `getUser()` calls (~210ms + ~230ms, unavoidable
+without weakening either the middleware's server-verified check or the authoritative RSC-layer
+check) account for most of the remaining fixed cost and were deliberately left untouched — see
+the final report delivered this session for the full trade-off and recommendation. The gap
+between what's reproducible locally and the reported production number is most likely Vercel
+cold starts and/or Vercel-Supabase region mismatch, neither of which is verifiable without live
+access — flagged as the top remaining risk requiring live Vercel verification.
+
+Per-navigation round trips at the shared-layout level are now: proxy `getUser()` (1) + RSC
+`getUser()` (1, deduped from a would-be second call) + membership query (1) + entitlements query
+(1, now `cache()`-deduped across a request instead of up to 2 on pages that call it twice). No RLS
+policy, migration, or RPC changed this session — every fix was in `lib/dal.ts`, `lib/
+entitlements.ts` (plus its ~10 call sites, updated to a new 1-argument signature), `app/globals.css`,
+and new `loading.tsx`/`logout-button.tsx`/`page-skeleton.tsx` files. A focused regression script
+(disposable businesses, service-role setup, cleaned up after) reconfirmed tenant isolation,
+cross-business entitlement isolation, the Session 7 owner-takeover guard, and the
+`loyalty_programs` CHECK constraints — all still intact after these changes.

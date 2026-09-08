@@ -27,7 +27,7 @@ export async function createLocation(_state: CreateLocationState, formData: Form
 
   const supabase = await createClient();
   const [entitlements, { count: currentLocations }] = await Promise.all([
-    getEntitlements(supabase, membership.business_id),
+    getEntitlements(membership.business_id),
     supabase.from("locations").select("id", { count: "exact", head: true }).eq("business_id", membership.business_id),
   ]);
 

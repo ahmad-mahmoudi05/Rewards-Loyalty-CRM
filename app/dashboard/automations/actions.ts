@@ -35,7 +35,7 @@ export async function saveAutomation(type: AutomationType, _state: SaveAutomatio
   const supabase = await createClient();
 
   if (enabled) {
-    const entitlements = await getEntitlements(supabase, membership.business_id);
+    const entitlements = await getEntitlements(membership.business_id);
     if (!entitlements.automationEnabled) {
       return { error: `Automations aren't included in your ${entitlements.planName} plan. Upgrade in Billing to enable them.` };
     }

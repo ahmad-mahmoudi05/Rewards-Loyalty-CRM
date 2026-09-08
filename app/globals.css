@@ -3,6 +3,20 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* Tells the browser which palette the page supports, so it can pick
+     matching default colors for UA-rendered chrome it controls itself —
+     most importantly here, a native <select>'s open option-list popup.
+     Without this, Chromium renders that popup with light-mode defaults
+     (white background) regardless of the page's own dark CSS, while the
+     <select> element itself still inherits the page's light option text
+     color from `color: var(--foreground)` — light text on a light popup,
+     nearly invisible. This was the root cause of the production dropdown
+     bug (see docs/progress.md "Session 8"). Declaring both here and
+     re-declaring "dark" under the dark media query (matching the existing
+     --background/--foreground split below) is the standard fix and is far
+     more reliable across browsers than trying to force `background-color`
+     on <option> elements, which most browsers/OSes ignore for the popup. */
+  color-scheme: light;
 }
 
 @theme inline {
@@ -16,6 +30,7 @@
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    color-scheme: dark;
   }
 }
 
@@ -23,4 +38,37 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Belt-and-suspenders for the same bug: explicitly pin the CLOSED select
+   box's own colors (color-scheme handles the open popup in every browser
+   that was actually broken, but Safari in particular is inconsistent about
+   inheriting `color`/`background-color` onto the closed control from
+   ancestors when a custom color-scheme is set). Native <option> background/
+   text-color styling inside the open popup itself is unreliable across
+   browsers by design (the popup is OS-rendered chrome in several engines) —
+   color-scheme above is the actually-reliable fix for that part, not this
+   rule; do not attempt to force per-option colors here, see the comment
+   above and docs/progress.md "Session 8" for why that path was rejected. */
+select {
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+/* Issue 3 (production UX pass): Tailwind v4's Preflight reset does not set
+   cursor:pointer on <button>, unlike some other CSS resets — genuinely
+   clickable controls across the app looked non-interactive on hover.
+   Applied globally rather than per-component so every current and future
+   button/link-styled-as-button gets it automatically; the :disabled rule
+   after it wins by specificity/order for the disabled case, and inputs are
+   explicitly excluded so text/search fields keep the text cursor. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a[href] {
+  cursor: pointer;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
 }

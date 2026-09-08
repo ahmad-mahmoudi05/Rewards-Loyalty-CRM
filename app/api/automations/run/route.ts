@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
     // Re-checked on every run, not just at save time: a business that
     // downgrades or lets its trial lapse after enabling an automation must
     // stop triggering it, not just be blocked from enabling a new one.
-    const entitlements = await getEntitlements(supabase, automation.business_id);
+    const entitlements = await getEntitlements(automation.business_id);
     if (!entitlements.automationEnabled || billingGateMessage(entitlements)) {
       summary[automation.id] = { type: automation.trigger_type, business: automation.business.name, skipped: "entitlement" };
       continue;

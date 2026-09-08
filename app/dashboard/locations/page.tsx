@@ -9,7 +9,7 @@ export default async function LocationsPage() {
 
   const [{ data: locations }, entitlements] = await Promise.all([
     supabase.from("locations").select("*").eq("business_id", membership.business_id).order("created_at", { ascending: true }),
-    getEntitlements(supabase, membership.business_id),
+    getEntitlements(membership.business_id),
   ]);
 
   const canManage = membership.role === "OWNER" || membership.role === "MANAGER";

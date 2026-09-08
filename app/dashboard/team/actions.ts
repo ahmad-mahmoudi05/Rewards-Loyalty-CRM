@@ -48,8 +48,7 @@ export async function inviteStaffMember(_state: InviteStaffState, formData: Form
   // otherwise an owner could invite past the limit while several
   // invitations sit unaccepted. Rejected server-side, not just a hidden
   // "invite" button.
-  const supabase = await createClient();
-  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const entitlements = await getEntitlements(membership.business_id);
   const { count: pendingInvites } = await service
     .from("business_invitations")
     .select("id", { count: "exact", head: true })

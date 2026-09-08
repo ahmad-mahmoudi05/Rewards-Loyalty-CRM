@@ -1,6 +1,7 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { cache } from "react";
 import type { Database } from "@/lib/supabase/database.types";
+import { createServiceRoleClient } from "@/lib/supabase/service";
 
 /**
  * The single place plan/subscription state gets turned into "can this
@@ -60,20 +61,44 @@ const NO_SUBSCRIPTION_FALLBACK: Omit<Entitlements, "planCode" | "planName"> = {
 
 /**
  * Reads the business's plan + subscription and derives every entitlement
- * flag from them. Safe to call with either an authenticated (RLS-scoped) or
- * service-role client — `subscriptions_select_owner` (Day 1 RLS) already
- * restricts the authenticated path to the business's own OWNER, which is
- * who calls this from server actions; the service-role callers (webhook,
- * scheduled evaluators) intentionally bypass that, same as everywhere else
- * service-role is used in this codebase.
+ * flag from them.
  *
- * A business with no subscription row at all (shouldn't happen after this
- * session — onboarding always creates one — but defensively handled for any
- * business created before this migration, or a race) is treated as
+ * Deliberately uses a service-role client internally, not whatever client
+ * the caller has — `subscriptions_select_owner` RLS restricts SELECT on
+ * `subscriptions` to the business's OWNER only (spec section 5: staff must
+ * not see billing). That's the correct restriction for the raw table, but
+ * entitlements are a business-wide gate that MANAGER/STAFF actions also
+ * need to evaluate correctly (e.g. `recordTransaction`, which STAFF are
+ * meant to be able to do) — calling this with an authenticated non-OWNER
+ * client silently got `null` back from RLS and fell through to
+ * `NO_SUBSCRIPTION_FALLBACK`, which blocks the action outright regardless
+ * of the real subscription state. Found and fixed during the Session 9 UX/
+ * performance pass (verified live: a real STAFF session reading
+ * `subscriptions` directly got `{data: null, error: null}` for a business
+ * with a genuinely active TRIALING subscription). `businessId` is always
+ * supplied by a caller that has already established, through an
+ * RLS-validated membership lookup, that the current session belongs to
+ * that business — this never accepts an arbitrary caller-chosen id, so
+ * reading it with elevated privilege here doesn't create a cross-tenant
+ * path, matching how service-role is already used elsewhere in this
+ * codebase for background reads scoped to an already-validated business_id.
+ *
+ * Wrapped in `cache()` (dropping the old `supabase` parameter is what makes
+ * this actually dedupe — `cache()` keys on argument equality, and a fresh
+ * client instance per call site would never have matched by reference) so
+ * a page that needs entitlements in both its shared layout and its own
+ * body — `/dashboard/billing`, `/dashboard/locations` — only pays for one
+ * query per request, not two. `cache()` is request-scoped only, never
+ * shared across requests or users, so this cannot leak entitlements data
+ * between tenants or sessions.
+ *
+ * A business with no subscription row at all (shouldn't happen — onboarding
+ * always creates one — but defensively handled) is treated as
  * `isTrialExpired: true` / `isInGoodStanding: false` with the most
  * restrictive fallback limits, never as unlimited access.
  */
-export async function getEntitlements(supabase: SupabaseClient<Database>, businessId: string): Promise<Entitlements> {
+export const getEntitlements = cache(async (businessId: string): Promise<Entitlements> => {
+  const supabase = createServiceRoleClient();
   const { data } = await supabase
     .from("subscriptions")
     .select("*, plan:plans(*)")
@@ -116,7 +141,7 @@ export async function getEntitlements(supabase: SupabaseClient<Database>, busine
     customDomainEnabled: plan.custom_domain_enabled,
     advancedAnalytics: plan.advanced_analytics,
   };
-}
+});
 
 /**
  * The standard "reject the action, don't just hide the button" gate for

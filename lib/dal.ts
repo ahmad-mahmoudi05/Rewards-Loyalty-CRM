@@ -19,14 +19,23 @@ export const getCurrentUser = cache(async () => {
  * A user can belong to more than one business (business_members supports it),
  * but there is no "switch business" UI yet — Day 1 scope picks the most
  * recently joined membership as the active one. See docs/database.md.
+ *
+ * Reuses `getCurrentUser()` (the `cache()`-wrapped version) instead of
+ * calling `supabase.auth.getUser()` again directly — this used to be a
+ * second, redundant auth-revalidation network round trip on every single
+ * dashboard navigation (measured live: ~200-240ms each, see docs/progress.md
+ * "Session 9" for the full before/after). `requireBusinessContext()` always
+ * calls `requireUser()` (which resolves `getCurrentUser()`) immediately
+ * before this, so by the time this function runs the cache is already warm
+ * within the current request — this doesn't skip verification, it reuses
+ * the verification that already happened once, same as any other call to a
+ * `cache()`-wrapped function within one request/render.
  */
 export const getCurrentBusinessMembership = cache(async () => {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return null;
 
+  const supabase = await createClient();
   const { data } = await supabase
     .from("business_members")
     .select("*, business:businesses(*)")

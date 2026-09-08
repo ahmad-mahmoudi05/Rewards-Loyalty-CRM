@@ -27,7 +27,7 @@ export async function recordTransaction(
 
   const supabase = await createClient();
 
-  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const entitlements = await getEntitlements(membership.business_id);
   const gateMessage = billingGateMessage(entitlements);
   if (gateMessage) return { error: gateMessage };
 

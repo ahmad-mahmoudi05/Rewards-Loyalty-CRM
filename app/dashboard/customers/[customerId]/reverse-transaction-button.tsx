@@ -34,7 +34,7 @@ export function ReverseTransactionButton({ customerId, transactionId }: { custom
         type="submit"
         className="rounded bg-red-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-60"
       >
-        {pending ? "…" : "Confirm"}
+        {pending ? "Reversing…" : "Confirm"}
       </button>
       {state?.error && <span className="text-xs text-red-600">{state.error}</span>}
     </form>

@@ -35,7 +35,7 @@ export async function createCampaign(_state: CreateCampaignState, formData: Form
 
   const supabase = await createClient();
 
-  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const entitlements = await getEntitlements(membership.business_id);
   const gateMessage = billingGateMessage(entitlements);
   if (gateMessage) return { error: gateMessage };
 
@@ -92,7 +92,7 @@ export async function sendCampaign(campaignId: string): Promise<SendCampaignStat
   const membership = await requireRole(["OWNER", "MANAGER"]);
   const supabase = await createClient();
 
-  const entitlements = await getEntitlements(supabase, membership.business_id);
+  const entitlements = await getEntitlements(membership.business_id);
   const gateMessage = billingGateMessage(entitlements);
   if (gateMessage) return { error: gateMessage };
 

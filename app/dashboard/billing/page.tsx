@@ -25,7 +25,7 @@ export default async function BillingPage({
   const supabase = await createClient();
 
   const [entitlements, { data: plans }, { data: subscription }] = await Promise.all([
-    getEntitlements(supabase, membership.business_id),
+    getEntitlements(membership.business_id),
     supabase.from("plans").select("*").order("price_monthly", { ascending: true }),
     supabase.from("subscriptions").select("stripe_customer_id").eq("business_id", membership.business_id).maybeSingle(),
   ]);
