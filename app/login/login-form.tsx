@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useActionState } from "react";
+import { Loader2 } from "lucide-react";
 import { login } from "./actions";
 
 export function LoginForm({ redirectTo }: { redirectTo: string }) {
@@ -49,9 +50,11 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
       <button
         disabled={pending}
         type="submit"
-        className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
+        aria-busy={pending}
+        className="flex items-center justify-center gap-2 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {pending ? "Logging in…" : "Log in"}
+        {pending && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+        {pending ? "Signing in…" : "Log in"}
       </button>
 
       <p className="text-center text-sm text-foreground/70">
