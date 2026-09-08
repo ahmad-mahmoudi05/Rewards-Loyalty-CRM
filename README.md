@@ -64,11 +64,16 @@ provider (what's tested, what's blocked on an external account) is in
    `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, and put its
    signing secret in `STRIPE_WEBHOOK_SECRET`.
 5. **Deploy.** Vercel Cron (`vercel.json`, already committed) schedules
-   `/api/campaigns/process` and `/api/automations/run` — note the free/Hobby Vercel plan
-   only allows daily cron jobs, not the `*/10 * * * *`/hourly cadence configured; either
-   upgrade to Pro or manually trigger those routes yourself (an
+   `/api/campaigns/process` and `/api/automations/run` to run **once daily, at 03:00 UTC
+   (07:00 Asia/Dubai)** — the Vercel Hobby plan only allows daily cron jobs, so this is the
+   beta/initial-launch cadence, not the target production one. Scheduled campaigns and
+   time-based automations will only actually process once a day at that time until this
+   changes. Once on Vercel Pro (or another scheduler), move `vercel.json` back to a frequent
+   cadence (`*/10 * * * *` for campaigns, hourly for automations was the pre-Hobby-constraint
+   config) — see `docs/launch-checklist.md` "Cron cadence" for the exact tradeoff. Until then,
+   you can manually trigger either route sooner with an
    `Authorization: Bearer <CRON_SECRET value>` request — required, both routes reject any
-   request without it) until then.
+   request without it.
 6. **Test on the real production URL** — signup → onboarding → loyalty setup → join QR →
    customer join → scanner (a real phone camera, not localhost/headless — see
    `docs/progress.md` Session 3's documented limitation) → campaign send → billing checkout

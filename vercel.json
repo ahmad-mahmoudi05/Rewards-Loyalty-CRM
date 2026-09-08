@@ -1,6 +1,6 @@
 {
   "crons": [
-    { "path": "/api/campaigns/process", "schedule": "*/10 * * * *" },
-    { "path": "/api/automations/run", "schedule": "0 * * * *" }
+    { "path": "/api/campaigns/process", "schedule": "0 3 * * *" },
+    { "path": "/api/automations/run", "schedule": "0 3 * * *" }
   ]
 }

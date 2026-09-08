@@ -28,6 +28,7 @@ underneath it needs one more external step):
 | Analytics (real data, date-range filters) | **PRODUCTION READY** |
 | Password reset / auth production config | **CODE READY — REQUIRES A DELIBERATE HUMAN STEP** (site_url/redirect URLs + the `enable_confirmations` decision, see README.md "Deploying to production") |
 | Production deployment (Vercel) | **CODE READY — NOT YET DEPLOYED** (this environment has no Vercel login; see README.md) |
+| Background campaign/automation processing on Vercel Hobby | **BETA-ONLY LIMITATION**: `vercel.json`'s crons run once daily (03:00 UTC / 07:00 Asia/Dubai) since Hobby doesn't allow more frequent cron jobs. Immediate sends and webhooks are unaffected; only scheduled campaigns and time-based automations are throttled to once a day. Move back to frequent processing on Vercel Pro or another scheduler before a real commercial launch — see `docs/launch-checklist.md` "Cron cadence." |
 | Loyalty points/stamps expiry | **POST-LAUNCH** (deferred at Day 4.5 — see `docs/database.md`) |
 | Legal pages (Privacy/Terms) | **POST-LAUNCH** — placeholder content live at `/privacy`/`/terms`, explicitly marked as requiring real legal review before broad commercial launch |
 | Custom domain | **POST-LAUNCH** — launch on the Vercel-provided URL first, see `docs/launch-checklist.md` "Domain readiness" |

@@ -270,6 +270,38 @@ misrepresented functionality, per "verify, don't trust prior Day reports." Full 
 full pre-deployment report — external blockers (Stripe/Meta/Twilio/Apple/Google Wallet
 accounts, Vercel deployment, physical device testing) are unchanged from Day 5, not new.
 
+### Cron cadence — reduced to once daily for the Vercel Hobby plan (beta only)
+
+`vercel.json` originally configured `/api/campaigns/process` every 10 minutes and
+`/api/automations/run` hourly. Vercel's Hobby plan only allows a cron job to run **once per
+day**, so both would have blocked deployment — not just the campaigns one. Both are now:
+
+```
+{ "path": "/api/campaigns/process", "schedule": "0 3 * * *" },
+{ "path": "/api/automations/run", "schedule": "0 3 * * *" }
+```
+
+`0 3 * * *` = once daily at **03:00 UTC / 07:00 Asia/Dubai** — a sensible early-morning slot
+for a UAE-first launch market, before a café's opening hours.
+
+**This is a beta/initial-deployment-only tradeoff, not a target architecture:**
+
+- Scheduled campaigns and time-based automations (inactive win-back, birthday, reward-ready
+  reminder, VIP) only actually process **once a day**, at that fixed time. A campaign
+  scheduled for 2pm won't send until the next 03:00 UTC run; an automation condition crossed
+  in the morning won't be evaluated until the next day.
+- Immediate sends are unaffected — Next.js `after()` still fires processing right when a
+  campaign is sent from the dashboard, and Stripe/Meta/Twilio/Resend webhooks are all
+  request-driven, not cron-driven. Only the *durability-net* and *time-based-evaluation*
+  paths are throttled to once daily.
+- **Once on Vercel Pro (or another scheduler is wired in), move both crons back to a frequent
+  cadence** — `*/10 * * * *` for `/api/campaigns/process`, hourly (`0 * * * *`) for
+  `/api/automations/run` was the pre-Hobby-constraint configuration and remains the intended
+  production target. No code changes are needed for that — only `vercel.json`.
+- No application logic changed to make this fit — `CRON_SECRET` protection, the campaign
+  processor, and the automation evaluators are all exactly as documented in `docs/progress.md`
+  Session 7.
+
 ## Priority order if behind schedule
 
 1. Authentication
